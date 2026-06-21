@@ -1,0 +1,16 @@
+import os
+
+configfile: "config.yaml"
+
+container: config.get("container_image", "docker://crossbuild-sv:latest")
+
+SAMPLE  = config["sample"]
+RESULTS = config["results_dir"]
+
+rule all:
+    input:
+        f"{RESULTS}/annotated/source/{SAMPLE}.hg19.annotated.vcf.gz",
+        f"{RESULTS}/annotated/merged/{SAMPLE}.merged.hg38.annotated.vcf.gz"
+
+include: "rules/liftover.smk"
+include: "rules/annotations.smk"

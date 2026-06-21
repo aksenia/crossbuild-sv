@@ -1,0 +1,67 @@
+# sv-preprocess/snake/config.yaml
+
+# -----------------
+# Run details
+# -----------------
+sample: dragen_illumina.chr22
+
+input_vcf: /data/dragen_illumina.chr22.vcf.gz
+results_dir: /results
+
+# -----------------
+# SV type filter
+# Only these SVTYPE values (from INFO/SVTYPE) are kept; all others (BND etc.) are dropped.
+# -----------------
+sv_types:
+  - DEL
+  - DUP
+  - "DUP:TANDEM"
+  - INS
+  - INV
+
+# Apply FILTER=PASS gate before liftover (set false to keep all records)
+pass_only: true
+
+# -----------------
+# Liftover tools to run
+# -----------------
+liftover_tools:
+  - crossmap
+  - bcftools
+  - picard
+  - transanno
+
+# -----------------
+# References (all container-internal paths)
+# -----------------
+ref:
+  hg19_fasta: /ref/hg19.fa
+  hg19_fasta_chr: /ref/hg19.chr.fa       # chr-prefixed, required by bcftools +liftover
+  hg38_fasta: /ref/hg38.fa
+  liftover_chain: /ref/hg19ToHg38.over.chain
+  transanno_chain: /ref/transanno.hg19tohg38.chain
+
+# -----------------
+# Region BED files (inside container at /app/regions/)
+# -----------------
+regions:
+  cups_hg19:    /app/regions/cups/FASTA_BED.ALL_GRCh37.novel_CUPs.bed.gz
+  cups_hg38:    /app/regions/cups/FASTA_BED.ALL_GRCh38.novel_CUPs.bed.gz
+  discreps_hg19: /app/regions/discreps/DISCREPS_hg19.sorted.bed.gz
+  discreps_hg38: /app/regions/discreps/DISCREPS_hg38.sorted.bed.gz
+  centel_hg19:  /app/regions/centel/centel_hg19.bed.gz
+  segdups_hg19: /app/regions/segdups/segdups_hg19.bed.gz
+  header:       /app/regions/header.txt
+
+# -----------------
+# Tool locations inside container
+# -----------------
+tools:
+  merge_script: /app/liftover/merge_tools.py
+
+# -----------------
+# Container image
+# Build: docker build -f sv-preprocess/Dockerfile -t crossbuild-sv:latest .
+# HPC:   apptainer build crossbuild-sv.sif docker-daemon://crossbuild-sv:latest
+# -----------------
+container_image: "docker://crossbuild-sv:latest"
