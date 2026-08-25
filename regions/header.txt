@@ -1,0 +1,4 @@
+##INFO=<ID=CUPs,Number=0,Type=Flag,Description="Overlaps a novel conversion-unstable position region for this reference build">
+##INFO=<ID=DISCREPs,Number=0,Type=Flag,Description="Overlaps a discordant reference patch">
+##INFO=<ID=CENTEL,Number=0,Type=Flag,Description="Overlaps an hg19 centromere or telomere region">
+##INFO=<ID=SEGDUP,Number=0,Type=Flag,Description="Overlaps an hg19 UCSC segmental duplication">

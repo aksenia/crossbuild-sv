@@ -1,0 +1,3 @@
+# Local reference sequences are required for runs but are too large for GitHub.
+Reference/**/*.fa
+Reference/**/*.fasta.gz

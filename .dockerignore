@@ -1,0 +1,8 @@
+Reference/
+.git/
+.gitignore
+.DS_Store
+results/
+*.sif
+__pycache__/
+*.pyc

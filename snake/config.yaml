@@ -3,27 +3,22 @@
 # -----------------
 # Run details
 # -----------------
-sample: dragen_illumina.chr22
+sample: HG002_dragen_chr22
 
-input_vcf: /data/dragen_illumina.chr22.vcf.gz
+input_vcf: /data/HG002_dragen.sv.hg19.renamed.chr22.vcf.gz
 results_dir: /results
 
 # -----------------
 # SV type filter
-# Only these SVTYPE values (from INFO/SVTYPE) are kept; all others (BND etc.) are dropped.
 # -----------------
 sv_types:
   - DEL
-  - DUP
-  - "DUP:TANDEM"
   - INS
-  - INV
 
-# Apply FILTER=PASS gate before liftover (set false to keep all records)
 pass_only: true
 
 # -----------------
-# Liftover tools to run
+# Liftover tools
 # -----------------
 liftover_tools:
   - crossmap
@@ -32,36 +27,45 @@ liftover_tools:
   - transanno
 
 # -----------------
-# References (all container-internal paths)
+# References
 # -----------------
 ref:
-  hg19_fasta: /ref/hg19.fa
-  hg19_fasta_chr: /ref/hg19.chr.fa       # chr-prefixed, required by bcftools +liftover
-  hg38_fasta: /ref/hg38.fa
-  liftover_chain: /ref/hg19ToHg38.over.chain
-  transanno_chain: /ref/transanno.hg19tohg38.chain
+  # hg19 with numeric contigs: 1, 2, ..., X, Y
+  hg19_fasta: /ref/hg19/hg19_nochr_fixed.fa
+
+  # hg19 with UCSC contigs: chr1, chr2, ..., chrX, chrY
+  hg19_fasta_chr: /ref/hg19/hg19.fa
+
+  # hg38 with chr-prefixed contigs
+  hg38_fasta: /ref/hg38/hg38.fa
+
+  # Chains are currently inside regions/chain/
+  liftover_chain: /app/regions/chain/hg19ToHg38.over.chain
+  transanno_chain: /app/regions/chain/transanno.hg19tohg38.chain
 
 # -----------------
-# Region BED files (inside container at /app/regions/)
+# Region BED files
 # -----------------
 regions:
-  cups_hg19:    /app/regions/cups/FASTA_BED.ALL_GRCh37.novel_CUPs.bed.gz
-  cups_hg38:    /app/regions/cups/FASTA_BED.ALL_GRCh38.novel_CUPs.bed.gz
+  cups_hg19: /app/regions/cups/FASTA_BED.ALL_GRCh37.novel_CUPs.bed.gz
+  cups_hg38: /app/regions/cups/FASTA_BED.ALL_GRCh38.novel_CUPs.bed.gz
+
   discreps_hg19: /app/regions/discreps/DISCREPS_hg19.sorted.bed.gz
   discreps_hg38: /app/regions/discreps/DISCREPS_hg38.sorted.bed.gz
-  centel_hg19:  /app/regions/centel/centel_hg19.bed.gz
+
+  centel_hg19: /app/regions/centel/centel_hg19.bed.gz
   segdups_hg19: /app/regions/segdups/segdups_hg19.bed.gz
-  header:       /app/regions/header.txt
+
+  header: /app/regions/header.txt
 
 # -----------------
-# Tool locations inside container
+# Tool locations
 # -----------------
 tools:
   merge_script: /app/liftover/merge_tools.py
+  normalize_sv_script: /app/liftover/normalize_sv_coordinates.py
 
 # -----------------
 # Container image
-# Build: docker build -f sv-preprocess/Dockerfile -t crossbuild-sv:latest .
-# HPC:   apptainer build crossbuild-sv.sif docker-daemon://crossbuild-sv:latest
 # -----------------
 container_image: "docker://crossbuild-sv:latest"

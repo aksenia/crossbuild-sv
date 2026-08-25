@@ -1,119 +1,144 @@
 # crossbuild-sv
 
-A liftover pipeline for structural variants (SVs) that assesses how reliably
-hg19 SV calls can be lifted to hg38 — using native hg38 calls on the same
-individual as the reference point.
+`crossbuild-sv` is the preprocessing component of an hg19-to-hg38 structural
+variant (SV) comparison project. It filters one hg19 SV VCF, runs four
+independent liftover tools, merges tool results that agree on the lifted SV
+interval, and adds the required genomic-region flags.
 
-## Motivation
+The executable workflow ends with two annotated VCFs. Native-hg38 comparison,
+concordance metrics, prioritisation, and cohort aggregation are downstream
+tasks and are not implemented in this repository.
 
-Structural variant calling is reference-dependent. The same individual called
-on hg19 and on hg38 natively will produce somewhat different call sets due to
-reference differences, caller behaviour, and region accessibility. When only
-hg19 calls exist, liftover is the only way to bring them into hg38 coordinates.
-But liftover tools disagree, and SVs span large genomic intervals that can
-straddle chain-break boundaries — making liftover less reliable than for SNVs.
+## Preprocessing workflow
 
-**This pipeline quantifies that reliability** by comparing liftover results
-against native hg38 calls, which — in the absence of a ground truth — serve
-as the best available proxy for what the correct hg38 coordinates should be.
-
-## Modules
-
-The project has two modes of operation:
-
-### Per-sample mode
-
-Process one individual to get per-tool concordance metrics against native hg38
-calls. This is the core analysis and the output of this pipeline.
-
-```
-Same individual
-       │
-       ├── hg19 SV calls  ──► liftover (4 tools) ──► merged hg38 liftover set
-       │                                                          │
-       └── hg38 SV calls (native) ────────────────────────────── compare
-                                                                  │
-                                                            concordance metrics
-                                                            per-tool, per-region,
-                                                            per-SVTYPE
+```text
+hg19 SV VCF
+    |
+    +-- filter SVTYPE and FILTER
+    +-- stamp a unique source-derived ID
+    +-- annotate source: CUPs, DISCREPs, CENTEL, SEGDUP
+    |
+    +-- CrossMap --------+
+    +-- bcftools --------+-- normalize END only
+    +-- Picard ----------+-- tag LIFTOVER_TOOL
+    +-- Transanno -------+-- merge matching intervals
+                              |
+                              +-- annotate hg38: CUPs, DISCREPs
 ```
 
-- **hg19 input**: SV VCF from any caller (DRAGEN, Manta, PBSV, …). Filtered
-  to target SVTYPE: DEL, DUP, DUP:TANDEM, INS, INV.
-- **hg38 input**: ideally the same caller on the same sample natively called on
-  hg38, but any hg38 SV call set for the same individual is usable.
-- **Liftover**: four independent tools run in parallel on the hg19 VCF. Their
-  outputs are merged into an exhaustive set: records where all tools agree are
-  collapsed; records where tools disagree on position are kept as separate lines,
-  each tagged with which tool produced them.
-- **Comparison** (downstream, not in this pipeline): the merged liftover set is
-  matched against native hg38 calls by SVTYPE + reciprocal overlap. Concordance
-  is evaluated per tool, per genomic region (SEGDUP, CENTEL, CUPs, DISCREPs),
-  and per SVTYPE.
+All four tools receive the same filtered source records. Their successful
+outputs and rejection files remain separate and auditable.
 
-### Cohort mode
+## SV-specific coordinate rule
 
-Run the same per-sample pipeline across multiple individuals, then produce
-meta-summaries that aggregate concordance metrics across the cohort. This
-answers questions like:
+The liftover tools remain the coordinate-producing methods. Post-processing
+does not rewrite their `CHROM`, `POS`, `ID`, `REF`, or `ALT`; it only prevents
+an hg19 `END` from being mistaken for an hg38 endpoint:
 
-- Which liftover tool is most consistently reliable across samples?
-- Are there genomic regions where all tools fail across all samples (systematic
-  liftover dead zones)?
-- Does per-tool concordance vary by SVTYPE or SV size across the cohort?
+- sequence-resolved records: `END = POS + length(REF) - 1`;
+- symbolic `INS`: `END = POS`;
+- symbolic `DEL`, `DUP`, `DUP:TANDEM`, and `INV`: source `POS` and `END` must
+  map through one branch-specific chain record to the interval reported by the
+  tool. The tool's `CHROM` and `POS` must agree, and only `END` is filled;
+- a record that cannot satisfy the applicable rule, or whose reported REF does
+  not match hg38, is written to the tool's `end_rejected.vcf`.
 
-```
-Sample 1 ──► per-sample pipeline ──► metrics
-Sample 2 ──► per-sample pipeline ──► metrics  ──► cohort aggregation ──► meta-summary
-Sample N ──► per-sample pipeline ──► metrics
+No endpoint provenance score, event clustering, comparison threshold, or
+consensus call is added.
+
+## Source identity and merge
+
+Each retained source record is assigned:
+
+```text
+CHROM_POS_SVTYPE_END_rN
 ```
 
-Cohort mode is a planned extension. The per-sample pipeline output format is
-designed to be directly aggregable: each sample produces a structured metrics
-file that the cohort aggregation step can consume without re-running liftover.
+The coordinate-based prefix follows the original pipeline. The deterministic
+record ordinal is necessary because `CHROM_POS_SVTYPE_END` is not unique in the
+pilot input.
+
+Tool records are collapsed only when these fields agree:
+
+```text
+CHROM / POS / END / source-derived ID
+```
+
+`LIFTOVER_TOOL` contains the tools that produced that interval. Different
+target positions or endpoints remain separate. REF/ALT differences are not
+used to redefine coordinate agreement; the complete tool-specific
+representations remain in the per-tool VCFs.
+
+## Supported SV types
+
+The configured set may contain `DEL`, `DUP`, `DUP:TANDEM`, `INS`, and `INV`.
+`BND` and any other unconfigured type are removed at the filter step.
 
 ## Repository layout
 
-```
-sv-preprocess/
-├── Dockerfile              # builds crossbuild-sv image (4 liftover tools)
+```text
+crossbuild-sv/
+├── Dockerfile
 ├── liftover/
-│   └── merge_tools.py      # merges per-tool outputs on CHROM/POS/ID key
+│   ├── merge_tools.py
+│   └── normalize_sv_coordinates.py
+├── regions/
 ├── snake/
 │   ├── Snakefile
-│   ├── config.yaml         # user-editable: paths, sv_types, pass_only
+│   ├── config.yaml
 │   └── rules/
-│       ├── liftover.smk    # filter → stamp IDs → 4 tools → tag → merge
-│       └── annotations.smk # region flags on hg19 source + hg38 merged VCF
+│       ├── liftover.smk
+│       └── annotations.smk
 └── docs/
-    ├── pipeline.md         # detailed pipeline steps and how to run
-    └── tools.md            # per-tool SV-specific notes and known limitations
+    ├── pipeline.md
+    └── tools.md
 ```
 
-## Quick start
+`Reference/` contains local reference files for the current run and is not
+copied into the image.
 
-See [docs/pipeline.md](docs/pipeline.md) for full setup and run instructions.
+## Build and run
+
+From the repository root:
 
 ```bash
-# 1. Build container (from repo root)
-docker build -f sv-preprocess/Dockerfile -t crossbuild-sv:latest .
-
-# 2. Edit snake/config.yaml with your paths
-
-# 3. Run
-snakemake \
-    --snakefile snake/Snakefile \
-    --configfile snake/config.yaml \
-    --use-singularity \
-    --singularity-args "..." \
-    --cores 8
+docker build -t crossbuild-sv:latest .
 ```
 
-## Outputs
+Edit `snake/config.yaml`, then run with the configured reference, data, and
+results mounts. For the current HG002 chr22 pilot:
 
-The pipeline produces two annotated VCFs:
+```bash
+docker run --rm \
+  -v "$PWD/Reference:/ref:ro" \
+  -v "$PWD/results:/results" \
+  -v "/Users/shaniaim/Documents/OUS/variant-benchmarking/02_chr22/hg19:/data:ro" \
+  crossbuild-sv:latest \
+  snakemake \
+    --snakefile /app/snake/Snakefile \
+    --configfile /app/snake/config.yaml \
+    --cores 1 \
+    --printshellcmds
+```
 
-| File | Description |
+Use `--dry-run` before execution. The first acceptance run uses one core
+because the Picard rule reserves a 6 GB Java heap.
+
+See [docs/pipeline.md](docs/pipeline.md) for the complete file-by-file workflow
+and [docs/tools.md](docs/tools.md) for the exact four-tool commands and
+limitations.
+
+## Final outputs
+
+| File | Preprocessing result |
 |---|---|
-| `annotated/source/<sample>.hg19.annotated.vcf.gz` | Filtered hg19 VCF with region flags; use as input to the comparison tool |
-| `annotated/merged/<sample>.merged.hg38.annotated.vcf.gz` | Merged hg38 liftover VCF with `LIFTOVER_TOOL` tags and region flags; compare against native hg38 calls |
+| `annotated/source/<sample>.hg19.annotated.vcf.gz` | Filtered, ID-stamped hg19 records with CUPs, DISCREPs, CENTEL, and SEGDUP flags |
+| `annotated/merged/<sample>.merged.hg38.annotated.vcf.gz` | Merged hg38 liftover intervals with `LIFTOVER_TOOL`, CUPs, and DISCREPs |
+
+Intermediate per-tool VCFs and rejection VCFs are retained under
+`liftover/<tool>/`.
+
+These two annotated VCFs are the preprocessing interface to a later
+per-sample native-hg38 comparison. Running that comparison across samples and
+aggregating its metrics would form cohort mode, but neither stage belongs to
+this preprocessing task.

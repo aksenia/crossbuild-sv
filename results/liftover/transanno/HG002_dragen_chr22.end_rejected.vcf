@@ -1,0 +1,128 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##fileDate=20260329
+##DRAGENVersion=<ID=dragen,Version="SW: 4.4.4, HW: 07.031.779">
+##DRAGENCommandLine=<ID=dragen,Date="Sun Mar 29 18:53:52 CEST 2026",CommandLineOptions="-f -r /staging/projects/p22/reference/hg19/4.4.4/hs37d5-pangenome-reference-illumina-maskPMS2CLwgs -1 wgs610_NA24385K4_cb3e54ca-6236-4860-9b77-d1da9b1bf11f_S39_L005_R1_001.fastq_8954e901-9eee-428d-884d-cb8893b05da5_32469d43-325d-4191-8553-d06ccd2601b1.ora -2 wgs610_NA24385K4_cb3e54ca-6236-4860-9b77-d1da9b1bf11f_S39_L005_R2_001.fastq_9ff064fe-a84b-40a6-b668-aafaadd9f21e_619d8c3c-3b02-483b-8db0-62317d364714.ora --ora-reference /staging/projects/p22/reference/hg19/oradata_homo_sapiens --RGID Diag-wgs610-NA24385K4 --RGDT 2026-03-29 --RGSM Diag-wgs610-NA24385K4 --RGPL ILLUMINA --output-directory /boston/diag/production/data/analyses-work/Diag-wgs610-NA24385K4-DR/result/2026-03-29_18-45-39/work/8e/cf8c933bb78ce2c78adf72ce8fe788 --output-file-prefix Diag-wgs610-NA24385K4-DR --output-format CRAM --cnv-counts-method start --cnv-enable-self-normalization true --cnv-enable-tracks true --cnv-filter-bin-support-ratio 0.2 --cnv-filter-copy-ratio 0.2 --cnv-filter-length 5000 --cnv-filter-qual 10 --cnv-merge-distance 0 --cnv-merge-threshold 0.2 --cnv-min-qual 3 --cnv-max-qual 200 --cnv-segmentation-mode slm --cnv-wgs-interval-width 1000 --dbsnp /boston/diag/production/reference/public/refdata/data/genomic/knownSites/dbsnp/dbsnp_138.b37.vcf.gz --enable-cnv true --enable-cram-indexing true --enable-duplicate-marking true --enable-map-align-output true --enable-sv true --enable-variant-caller true --gc-metrics-enable=true --repeat-genotype-enable=true --repeat-genotype-use-catalog=default_plus_smn --sample-sex auto --vc-emit-ref-confidence GVCF --vc-enable-joint-detection=true --verbose">
+##source=DRAGEN_SV
+##reference=file:///staging/projects/p22/reference/hg19/4.4.4/hs37d5-pangenome-reference-illumina-maskPMS2CLwgs
+##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise structural variation">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Difference in length between REF and ALT alleles">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">
+##INFO=<ID=CIPOS,Number=2,Type=Integer,Description="Confidence interval around POS">
+##INFO=<ID=CIEND,Number=2,Type=Integer,Description="Confidence interval around END">
+##INFO=<ID=CIGAR,Number=A,Type=String,Description="CIGAR alignment for each alternate indel allele">
+##INFO=<ID=MATEID,Number=.,Type=String,Description="ID of mate breakend">
+##INFO=<ID=EVENT,Number=1,Type=String,Description="ID of event associated to breakend">
+##INFO=<ID=HOMLEN,Number=.,Type=Integer,Description="Length of base pair identical homology at event breakpoints">
+##INFO=<ID=HOMSEQ,Number=.,Type=String,Description="Sequence of base pair identical homology at event breakpoints">
+##INFO=<ID=SVINSLEN,Number=.,Type=Integer,Description="Length of insertion">
+##INFO=<ID=SVINSSEQ,Number=.,Type=String,Description="Sequence of insertion">
+##INFO=<ID=LEFT_SVINSSEQ,Number=.,Type=String,Description="Known left side of insertion for an insertion of unknown length">
+##INFO=<ID=RIGHT_SVINSSEQ,Number=.,Type=String,Description="Known right side of insertion for an insertion of unknown length">
+##INFO=<ID=DUPSVLEN,Number=.,Type=Integer,Description="Length of duplicated reference sequence">
+##INFO=<ID=DUPSVINSLEN,Number=.,Type=Integer,Description="Length of inserted sequence after duplicated reference sequence">
+##INFO=<ID=DUPSVINSSEQ,Number=.,Type=String,Description="Inserted sequence after duplicated reference sequence">
+##INFO=<ID=DUPHOMLEN,Number=.,Type=Integer,Description="Length of base pair identical homology at event breakpoints excluding duplicated reference sequence">
+##INFO=<ID=DUPHOMSEQ,Number=.,Type=String,Description="Sequence of base pair identical homology at event breakpoints excluding duplicated reference sequence">
+##INFO=<ID=CONTIG,Number=1,Type=String,Description="Assembled contig sequence">
+##INFO=<ID=BND_DEPTH,Number=1,Type=Integer,Description="Read depth at local translocation breakend">
+##INFO=<ID=MATE_BND_DEPTH,Number=1,Type=Integer,Description="Read depth at remote translocation mate breakend">
+##INFO=<ID=JUNCTION_QUAL,Number=1,Type=Integer,Description="If the SV junction is part of an EVENT (ie. a multi-adjacency variant), this field provides the QUAL value for the adjacency in question only">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=FT,Number=1,Type=String,Description="Sample filter, 'PASS' indicates that all filters have passed for this sample">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
+##FORMAT=<ID=PL,Number=G,Type=Integer,Description="Normalized, Phred-scaled likelihoods for genotypes as defined in the VCF specification">
+##FORMAT=<ID=SB,Number=4,Type=Integer,Description="Per-sample component statistics which comprise the Fisher's Exact Test to detect strand bias">
+##FORMAT=<ID=FS,Number=1,Type=Float,Description="Phred-scaled p-value using Fisher's exact test to detect strand bias">
+##FORMAT=<ID=PR,Number=R,Type=Integer,Description="Spanning paired-read support for the ref and alt alleles in the order listed">
+##FORMAT=<ID=SR,Number=R,Type=Integer,Description="Split reads for the ref and alt alleles in the order listed, for reads where P(allele|read)>0.999">
+##FORMAT=<ID=VF,Number=R,Type=Integer,Description="Number of DNA fragments support of the breakend mates for the ref and alt alleles in the order listed">
+##FILTER=<ID=Ploidy,Description="For DEL & DUP variants, the genotypes of overlapping variants (with similar size) are inconsistent with diploid expectation (not applied to records with KnownSVScoring flag)">
+##FILTER=<ID=MaxDepth,Description="Depth is greater than 3x the median chromosome depth near one or both variant breakends (not applied to records with KnownSVScoring flag)">
+##FILTER=<ID=MaxMQ0Frac,Description="For a small variant (<1000 bases), the fraction of reads in all samples with MAPQ0 around either breakend exceeds 0.4 (not applied to records with KnownSVScoring flag)">
+##FILTER=<ID=NoPairSupport,Description="For variants significantly larger than the paired read fragment size, no paired reads support the alternate allele in any sample (not applied to records with KnownSVScoring flag)">
+##FILTER=<ID=MinQUAL,Description="QUAL score is less than 76 (not applied to records with KnownSVScoring flag)">
+##FILTER=<ID=SampleFT,Description="No sample passes all the sample-level filters">
+##FILTER=<ID=MinGQ,Description="GQ score is less than 5 (filter applied at sample level; not applied to records with KnownSVScoring flag)">
+##FILTER=<ID=HomRef,Description="Homozygous reference call (filter applied at sample level)">
+##FILTER=<ID=StrandBias,Description="For a small deletion (<1000 bases), more than a half of samples have strand bias">
+##ALT=<ID=DEL,Description="Deletion">
+##ALT=<ID=INS,Description="Insertion">
+##ALT=<ID=DUP:TANDEM,Description="Tandem Duplication">
+##ALT=<ID=INV,Description="Inversion">
+##bcftools_viewVersion=1.23.1+htslib-1.23.1
+##bcftools_viewCommand=view -r 22 -Oz -o 02_chr22/hg19/HG002_dragen.sv.hg19.renamed.chr22.vcf.gz caller_vcfs/HG002_dragen.sv.hg19.renamed.vcf.gz; Date=Fri Jun 19 12:54:46 2026
+##bcftools_viewVersion=1.22+htslib-1.22
+##bcftools_viewCommand=view -f PASS,. -i 'INFO/SVTYPE="DEL" || INFO/SVTYPE="INS"' /data/HG002_dragen.sv.hg19.renamed.chr22.vcf.gz; Date=Thu Aug 20 19:59:23 2026
+##bcftools_viewCommand=view -Oz -o /results/liftover/transanno/HG002_dragen_chr22.hg19.nochr.vcf.gz /results/liftover/source/HG002_dragen_chr22.hg19.vcf.gz; Date=Thu Aug 20 19:59:23 2026
+##contig=<ID=chr1,length=248956422>
+##contig=<ID=chr2,length=242193529>
+##contig=<ID=chr3,length=198295559>
+##contig=<ID=chr4,length=190214555>
+##contig=<ID=chr5,length=181538259>
+##contig=<ID=chr6,length=170805979>
+##contig=<ID=chr7,length=159345973>
+##contig=<ID=chr8,length=145138636>
+##contig=<ID=chr9,length=138394717>
+##contig=<ID=chr10,length=133797422>
+##contig=<ID=chr11,length=135086622>
+##contig=<ID=chr12,length=133275309>
+##contig=<ID=chr13,length=114364328>
+##contig=<ID=chr14,length=107043718>
+##contig=<ID=chr15,length=101991189>
+##contig=<ID=chr16,length=90338345>
+##contig=<ID=chr17,length=83257441>
+##contig=<ID=chr18,length=80373285>
+##contig=<ID=chr19,length=58617616>
+##contig=<ID=chr20,length=64444167>
+##contig=<ID=chr21,length=46709983>
+##contig=<ID=chr22,length=50818468>
+##contig=<ID=chrX,length=156040895>
+##contig=<ID=chrY,length=57227415>
+##contig=<ID=chrM,length=16569>
+##contig=<ID=chrUn_GL000226v1,length=15008>
+##contig=<ID=chr5_GL000208v1_random,length=92689>
+##contig=<ID=chrUn_GL000214v1,length=137718>
+##contig=<ID=chr3_GL000221v1_random,length=155397>
+##contig=<ID=chrUn_GL000218v1,length=161147>
+##contig=<ID=chrUn_GL000220v1,length=161802>
+##contig=<ID=chrUn_GL000213v1,length=164239>
+##contig=<ID=chr12_GL877875v1_alt,length=167313>
+##contig=<ID=chr1_KI270706v1_random,length=175055>
+##contig=<ID=chrUn_GL000216v2,length=176608>
+##contig=<ID=chr19_GL000209v2_alt,length=177381>
+##contig=<ID=chrUn_GL000219v1,length=179198>
+##contig=<ID=chrUn_GL000224v1,length=179693>
+##contig=<ID=chrUn_GL000195v1,length=182896>
+##contig=<ID=chr19_KI270890v1_alt,length=184499>
+##contig=<ID=chr1_KI270765v1_alt,length=185285>
+##contig=<ID=chr17_GL000205v2_random,length=185591>
+##contig=<ID=chrUn_KI270742v1,length=186739>
+##contig=<ID=chr14_GL000194v1_random,length=191469>
+##contig=<ID=chr14_GL000009v2_random,length=201709>
+##contig=<ID=chr4_GL000008v2_random,length=209709>
+##contig=<ID=chr14_GL000225v1_random,length=211173>
+##contig=<ID=chr2_KI270894v1_alt,length=214158>
+##contig=<ID=chr1_KI270766v1_alt,length=256271>
+##contig=<ID=chr4_GL000257v2_alt,length=586476>
+##contig=<ID=chr7_KI270803v1_alt,length=1111570>
+##contig=<ID=chr17_KI270908v1_alt,length=1423190>
+##contig=<ID=chr17_GL000258v2_alt,length=1821992>
+##contig=<ID=chr16_KI270728v1_random,length=1872759>
+##contig=<ID=chr6_GL000252v2_alt,length=4604811>
+##contig=<ID=chr6_GL000255v2_alt,length=4606388>
+##contig=<ID=chr6_GL000250v2_alt,length=4672374>
+##contig=<ID=chr6_GL000253v2_alt,length=4677643>
+##contig=<ID=chr6_GL000251v2_alt,length=4795265>
+##contig=<ID=chr6_GL000254v2_alt,length=4827813>
+##contig=<ID=chr6_GL000256v2_alt,length=4929269>
+##INFO=<ID=MULTIMAP,Number=1,Type=Integer,Description="# of multi-mapped regions">
+##INFO=<ID=REF_CHANGED,Number=0,Type=Flag,Description="Reference sequence is changed">
+##INFO=<ID=ORIGINAL_REF,Number=1,Type=String,Description="Original reference sequence">
+##INFO=<ID=ORIGINAL_CHROM,Number=1,Type=String,Description="Original chromosome">
+##INFO=<ID=ORIGINAL_POS,Number=1,Type=Integer,Description="Original position">
+##INFO=<ID=ORIGINAL_STRAND,Number=1,Type=String,Description="Original strand">
+##INFO=<ID=END_LIFTOVER_REASON,Number=1,Type=String,Description="Reason a lifted record failed END normalization">
+##FILTER=<ID=END_LIFTOVER_FAILED,Description="Target SV END could not be established without changing the tool result">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG002
