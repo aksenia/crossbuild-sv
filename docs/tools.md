@@ -108,3 +108,37 @@ a source-build endpoint to the merged hg38 VCF.
 
 The merged file is a coordinate-agreement view. The per-tool VCFs are the
 authoritative place to inspect each tool's complete record representation.
+
+## Inspect source-coordinate collisions
+
+`inspect_variant_collisions.py` is a read-only audit script for source records
+that share `CHROM`, `POS`, `SVTYPE`, and `END`. It shows the exact REF/ALT
+differences, VCF record and decompressed line numbers, reverse-complement
+tests, literal sequence change blocks, `QUAL`, `FILTER`, INFO assembly fields,
+and all per-sample FORMAT evidence. It labels GT as phased or unphased, reports
+`PS`/haplotype tags when present, and explicitly tests for reciprocal `1|0`
+versus `0|1` calls in the same sample.
+
+Inspect every collision in the current source VCF:
+
+```text
+python3 liftover/inspect_variant_collisions.py \
+  results/liftover/source/HG002_dragen_chr22.hg19.vcf.gz
+```
+
+Inspect one position and print every allele plus every change block:
+
+```text
+python3 liftover/inspect_variant_collisions.py \
+  results/liftover/source/HG002_dragen_chr22.hg19.vcf.gz \
+  --position 22:49780461 \
+  --show-full-alleles \
+  --show-full-evidence-sequences \
+  --max-blocks 0
+```
+
+The reverse-complement checks test literal sequence identity. The change-block
+alignment is intended for manual inspection and is not, by itself, evidence
+that two records are or are not the same biological event.
+Missing phase fields are reported as unavailable; the script never infers
+haplotype assignment from `QUAL` or read-support counts alone.

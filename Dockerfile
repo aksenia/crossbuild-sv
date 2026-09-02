@@ -123,12 +123,12 @@ RUN chmod +x ./liftover/*.py \
 # Runtime mount points
 #
 # Reference/ will be mounted at /ref
-# pilot input directory will be mounted at /data
+# VCF input directory will be mounted at /vcf
 # output directory will be mounted at /results
 # ============================================================
 RUN mkdir -p \
     /ref \
-    /data \
+    /vcf \
     /results \
     /home/crossbuild
 

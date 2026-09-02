@@ -72,19 +72,23 @@ sv-preprocess/
 [](https://github.com/aksenia/crossbuild-sv/tree/main#quick-start)
 See [docs/pipeline.md](https://github.com/aksenia/crossbuild-sv/blob/main/docs/pipeline.md) for full setup and run instructions.
 
-```
-# 1. Build container (from repo root)
-docker build -f sv-preprocess/Dockerfile -t crossbuild-sv:latest .
+```bash
+# 1. Build the image from the repository root. Reference FASTAs and VCFs are
+# mounted at runtime and are excluded from the Docker build context.
+docker build -t crossbuild-sv:latest .
 
-# 2. Edit snake/config.yaml with your paths
-
-# 3. Run
-snakemake \
-	--snakefile snake/Snakefile \
-	--configfile snake/config.yaml \
-	--use-singularity \
-	--singularity-args "..." \
-	--cores 8
+# 2. Run preprocessing with the configured chr22 SVDB inputs.
+docker run --rm \
+  -v "$PWD/Reference:/ref:ro" \
+  -v "$PWD/vcf:/vcf:ro" \
+  -v "$PWD/results:/results" \
+  crossbuild-sv:latest \
+  snakemake \
+    --snakefile /app/snake/Snakefile \
+    --configfile /app/snake/config.yaml \
+    --cores 8 \
+    --rerun-incomplete \
+    --printshellcmds
 ```
 
 ## Outputs
@@ -95,5 +99,4 @@ The pipeline produces two annotated VCFs:
 | --- | --- |
 | `annotated/source/<sample>.hg19.annotated.vcf.gz` | Filtered hg19 VCF with region flags; use as input to the comparison tool |
 | `annotated/merged/<sample>.merged.hg38.annotated.vcf.gz` | Merged hg38 liftover VCF with `LIFTOVER_TOOL` tags and region flags; compare against native hg38 calls |
-
 

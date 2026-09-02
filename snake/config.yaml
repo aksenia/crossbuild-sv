@@ -5,7 +5,12 @@
 # -----------------
 sample: HG002_dragen_chr22
 
-input_vcf: /data/HG002_dragen.sv.hg19.renamed.chr22.vcf.gz
+# hg19 input consumed by the preprocessing workflow.
+input_vcf: /vcf/HG002_dragen.sv.hg19.renamed.chr22.svdb.vcf.gz
+
+# Native hg38 call set reserved for the downstream comparison stage.
+# The current preprocessing workflow does not consume this file yet.
+native_hg38_vcf: /vcf/HG002_dragen.sv.hg38.renamed.chr22.svdb.vcf.gz
 results_dir: /results
 
 # -----------------

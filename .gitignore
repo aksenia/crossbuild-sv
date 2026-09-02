@@ -1,3 +1,60 @@
-# Local reference sequences are required for runs but are too large for GitHub.
-Reference/**/*.fa
-Reference/**/*.fasta.gz
+# macOS and editor metadata
+.DS_Store
+**/.DS_Store
+*.swp
+*.swo
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local reference assemblies and their generated indexes/dictionaries.
+# Keep only the small manifest that documents what must be supplied locally.
+/Reference/*
+!/Reference/README.md
+
+# Keep the exact chain and indexed BED payloads consumed by the Docker image.
+# Ignore the larger source/intermediate resources that the workflow does not use.
+/regions/*
+!/regions/README.md
+!/regions/header.txt
+!/regions/chain/
+/regions/chain/*
+!/regions/chain/hg19ToHg38.over.chain
+!/regions/chain/transanno.hg19tohg38.chain
+!/regions/cups/
+/regions/cups/*
+!/regions/cups/FASTA_BED.ALL_GRCh37.novel_CUPs.bed.gz
+!/regions/cups/FASTA_BED.ALL_GRCh37.novel_CUPs.bed.gz.tbi
+!/regions/cups/FASTA_BED.ALL_GRCh38.novel_CUPs.bed.gz
+!/regions/cups/FASTA_BED.ALL_GRCh38.novel_CUPs.bed.gz.tbi
+!/regions/discreps/
+/regions/discreps/*
+!/regions/discreps/DISCREPS_hg19.sorted.bed.gz
+!/regions/discreps/DISCREPS_hg19.sorted.bed.gz.tbi
+!/regions/discreps/DISCREPS_hg38.sorted.bed.gz
+!/regions/discreps/DISCREPS_hg38.sorted.bed.gz.tbi
+!/regions/centel/
+/regions/centel/*
+!/regions/centel/centel_hg19.bed.gz
+!/regions/centel/centel_hg19.bed.gz.tbi
+!/regions/segdups/
+/regions/segdups/*
+!/regions/segdups/segdups_hg19.bed.gz
+!/regions/segdups/segdups_hg19.bed.gz.tbi
+
+# Only the sorted, compressed VCFs and their indexes are deployment inputs.
+/vcf/*.unsorted.vcf
+
+# Local container and temporary build artifacts
+*.sif
+*.simg
+*.tmp
+*.temp
+
+# `results/` is intentionally not ignored: the small pilot outputs are kept as
+# auditable evidence when explicitly committed. The directory itself contains
+# a tracked placeholder so a fresh clone has a writable Docker mount target.

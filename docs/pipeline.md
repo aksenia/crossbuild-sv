@@ -174,7 +174,8 @@ The current pilot configuration in `snake/config.yaml` is:
 
 ```yaml
 sample: HG002_dragen_chr22
-input_vcf: /data/HG002_dragen.sv.hg19.renamed.chr22.vcf.gz
+input_vcf: /vcf/HG002_dragen.sv.hg19.renamed.chr22.svdb.vcf.gz
+native_hg38_vcf: /vcf/HG002_dragen.sv.hg38.renamed.chr22.svdb.vcf.gz
 results_dir: /results
 
 sv_types: [DEL, INS]
@@ -207,8 +208,8 @@ Dry-run the embedded workflow:
 ```bash
 docker run --rm \
   -v "$PWD/Reference:/ref:ro" \
+  -v "$PWD/vcf:/vcf:ro" \
   -v "$PWD/results:/results" \
-  -v "/Users/shaniaim/Documents/OUS/variant-benchmarking/02_chr22/hg19:/data:ro" \
   crossbuild-sv:latest \
   snakemake \
     --snakefile /app/snake/Snakefile \
