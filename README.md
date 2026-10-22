@@ -1,7 +1,7 @@
 # crossbuild-sv
 
 A liftover pipeline for structural variants (SVs) that assesses how reliably
-hg19 SV calls can be lifted to hg38 — using native hg38 calls on the same
+hg19 SV calls can be lifted to hg38, using native hg38 calls on the same
 individual as the reference point.
 
 ## Motivation
@@ -11,10 +11,10 @@ on hg19 and on hg38 natively will produce somewhat different call sets due to
 reference differences, caller behaviour, and region accessibility. When only
 hg19 calls exist, liftover is the only way to bring them into hg38 coordinates.
 But liftover tools disagree, and SVs span large genomic intervals that can
-straddle chain-break boundaries — making liftover less reliable than for SNVs.
+straddle chain-break boundaries, making liftover less reliable than for SNVs.
 
 **This pipeline quantifies that reliability** by comparing liftover results
-against native hg38 calls, which — in the absence of a ground truth — serve
+against native hg38 calls, which, in the absence of a ground truth, serve
 as the best available proxy for what the correct hg38 coordinates should be.
 
 ## Modules

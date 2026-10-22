@@ -7,21 +7,24 @@ native call, not the other way round.
 
 ## Steps
 
-1. **prep_native_vcf** — the native VCF gets the same treatment as the
+1. **prep_native_vcf**: the native VCF gets the same treatment as the
    source: SVTYPE/PASS filter, same contig subset (in chr naming), ID stamp
    `CHROM_POS_SVTYPE_END` (hg38 coords, `_2`, `_3` on collisions),
    `bcftools norm` + `finalize_sv.py` (REF check, END from the record), hg38
    region flags (CUPs, DISCREPs). Records failing QC go to
    `comparison/native/<s>.qc_rejected.vcf`.
-2. **lifted_set** — each tool's normalized hg38 VCF is split into
+2. **lifted_set**: each tool's normalized hg38 VCF is split into
    `main` (source IDs not REF-changed) and `refchanged` (IDs any tool flagged
    as REF-changed, see `refchanged_ids` in `liftover.smk`).
-3. **svdb_link** — `svdb --merge --no_intra` per tool × set, native listed
+3. **svdb_link**: `svdb --merge --no_intra` per tool × set, native listed
    first, `--overlap 0.8`, `--data_profile sample` (config `comparison:`).
    SVDB is used **only** to decide which native and lifted calls belong
    together; no SVDB coordinates or statistics are reported.
-4. **compare_native** — reads the SVDB clusters, looks every member up in the
-   normalized VCFs and writes the two tables below.
+4. **compare_native**: reads the SVDB clusters, looks every member up in the
+   normalized VCFs and writes the two tables below. Links are 1:1: if SVDB puts
+   several lifted calls in one native cluster, the closest (same chrom, then
+   smallest `|d_pos|+|d_end|`) stays `matched` and the others become
+   `lifted_only`.
 
 `tool=union` is not a separate SVDB run; it is derived from the per-tool
 links (one SVDB run over the merged set would let a native call join only one
@@ -44,7 +47,7 @@ One row per (tool, set, link). `.` = not applicable / missing.
 | `sample_id`, `tool`, `set` | `tool` ∈ configured tools + `union`; `set` ∈ `main`, `refchanged` |
 | `match_class` | `matched` (native + lifted in one SVDB cluster), `native_only`, `lifted_only`. The refchanged set has no `native_only` rows (all native calls are linked against it, so "unmatched" is not meaningful there) |
 | `native_id`, `source_id` | stamped IDs: native hg38, source hg19 |
-| `n_links` | matched rows: number of distinct source IDs linked to this native call within (tool, set). >1 = one native call matched several lifted calls |
+| `n_links` | matched rows: number of distinct source IDs SVDB put in this native call's cluster within (tool, set), before the 1:1 step. >1 = the others were demoted to `lifted_only` |
 | `nat_chrom/pos/end/svtype` | native record (normalized) |
 | `nat_svlen` | native event size in bp, positive, from the record (allele lengths; SVLEN for symbolic INS; END−POS for symbolic intervals) |
 | `nat_gt` | native GT, first sample |
@@ -77,7 +80,7 @@ Long format: `sample_id, tool, set, stratum, metric, value`. Counts are
 reported next to every rate so a cohort can pool numerators and denominators
 instead of averaging rates.
 
-### `set=all` — liftover yield (no native involved)
+### `set=all`: liftover yield (no native involved)
 
 Strata: `all`, `svtype=<T>`. Counted over source IDs.
 
@@ -87,7 +90,7 @@ Strata: `all`, `svtype=<T>`. Counted over source IDs.
 | | `lifted_ids` | in the tool's normalized hg38 output |
 | | `tool_rejected_ids` | in the tool's own reject file (`.unmap` / `rejected.vcf`) |
 | | `qc_rejected_ids` | lifted by the tool but failed `finalize_sv.py` QC |
-| | `unaccounted_ids` | neither lifted nor rejected — should be 0 |
+| | `unaccounted_ids` | neither lifted nor rejected, should be 0 |
 | | `refchanged_flagged_ids` | IDs this tool flagged as REF-changed |
 | | `yield` | `lifted_ids / source_ids` |
 | `union` | `source_ids`, `lifted_ids`, `yield` | as above, lifted by any tool |
@@ -96,7 +99,7 @@ Strata: `all`, `svtype=<T>`. Counted over source IDs.
 | | `refchanged_ids` | IDs routed to the refchanged set |
 | | `all_tools_agree_rate` | `all_tools_agree_ids / lifted_ids` |
 
-### `set=main` / `set=refchanged` — agreement with native
+### `set=main` / `set=refchanged`: agreement with native
 
 Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`.
 

@@ -1,4 +1,4 @@
-# Liftover tools — SV-specific notes
+# Liftover tools: SV-specific notes
 
 All four tools are included in the `crossbuild-sv` container and run on the
 same filtered, ID-stamped hg19 VCF. Every output is normalized the same way
@@ -15,20 +15,20 @@ summarised at the end.
 
 CrossMap has two subcommands relevant to SVs:
 
-- **`CrossMap vcf`** — what this pipeline uses. Lifts VCF records by mapping
+- **`CrossMap vcf`**: what this pipeline uses. Lifts VCF records by mapping
   POS through the UCSC chain file and updates INFO/END (since v0.4.3 for
   sequence-resolved SVs; since v0.7.0 for symbolic alleles like `<DEL>`).
-- **`CrossMap region`** — takes BED-format input (not VCF). Treats each span
+- **`CrossMap region`**: takes BED-format input (not VCF). Treats each span
   as a unified region, calculates the fraction of bases that successfully
   remap, and only outputs regions where this fraction exceeds a threshold
   (default 0.85, controlled by `-r`). Useful as a pre-filter to identify SVs
-  that span chain-break regions with low mapping confidence — but requires
+  that span chain-break regions with low mapping confidence, but requires
   converting VCF coordinates to BED and back.
 
 **SV behaviour (`CrossMap vcf`):**
 
 - Symbolic alleles (`<DEL>`, `<INS>` …): supported since v0.7.0; passed through
-  without REF sequence verification — liftover proceeds as long as POS maps.
+  without REF sequence verification; liftover proceeds as long as POS maps.
 - Sequence-resolved SVs: REF allele at the new position is verified against
   the hg38 reference by default. Records where REF mismatches go to the
   `.unmap` file. Use `--no-comp-alleles` to skip this check and allow records
@@ -99,7 +99,7 @@ thresholds rather than producing uncertain liftovers.
 
 - Symbolic alleles (`<DEL>`, `<INS>` …): carried through without REF sequence
   verification. Picard does not attempt to validate that the reference matches
-  at the destination — the symbolic allele is simply propagated to hg38.
+  at the destination; the symbolic allele is simply propagated to hg38.
 - Sequence-resolved SVs: REF is verified at the new position; mismatches cause
   rejection.
 - INFO/END: lifted independently from POS by looking up the END coordinate in
@@ -158,7 +158,7 @@ the other three tools). It is primarily designed for SNV/indel liftover.
 
 **Known limitations:**
 
-- Expects a minimap2-generated chain in transanno's own format — not the
+- Expects a minimap2-generated chain in transanno's own format, not the
   standard UCSC `.over.chain` (`transanno minimap2chain`, see
   [pipeline.md](pipeline.md#2-reference-data)).
 - `--no-left-align-chain` (note: different from bcftools's `--no-left-align`)
@@ -196,7 +196,7 @@ but rejected by `finalize_sv.py`.
 | --- | --- | --- | --- | --- |
 | Yield | 99.8% | 99.6% | 98.7% | 99.4% |
 | Tool rejections | 34 `Fail(Unmap)` | 39 ApartAnchors, 15 MismatchAnchors, 17 Unmapped* | 142 IndelStraddlesMultipleIntervals, 64 NoTarget, 19 MismatchedRefAllele, 4 CannotLiftOver | 42 LARGE_INSERTION, 11 LARGE_DELETION, 35 NO_CHAIN, 12 MULTIMAP |
-| QC rejections | 5 INVERTED_CHAIN, 1 END_NOT_IN_CHAIN | same | — | 4 NON_BASE_ALT, 1 END_NOT_IN_CHAIN |
+| QC rejections | 5 INVERTED_CHAIN, 1 END_NOT_IN_CHAIN | same | none | 4 NON_BASE_ALT, 1 END_NOT_IN_CHAIN |
 
 Findings to keep in mind when reading results (reported, not "fixed"):
 

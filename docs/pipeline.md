@@ -106,11 +106,11 @@ apptainer build crossbuild-sv.sif docker-daemon://crossbuild-sv:latest
 
 ### 2. Reference data
 
-- **hg19 FASTA** + `.fai`, numeric contigs (`1`, `2`, …) — Picard source, transanno
-- **hg19 FASTA chr-prefixed** + `.fai` — `bcftools +liftover` source
+- **hg19 FASTA** + `.fai`, numeric contigs (`1`, `2`, …): Picard source, transanno
+- **hg19 FASTA chr-prefixed** + `.fai`: `bcftools +liftover` source
 - **hg38 FASTA** + `.fai` + `.dict`, chr-prefixed
-- **hg19→hg38 UCSC chain** (`hg19ToHg38.over.chain`) — CrossMap, bcftools, Picard
-- **Transanno chain** — built with minimap2 (`minimap2 -cx asm5 --cs hg38.fa
+- **hg19→hg38 UCSC chain** (`hg19ToHg38.over.chain`): CrossMap, bcftools, Picard
+- **Transanno chain**: built with minimap2 (`minimap2 -cx asm5 --cs hg38.fa
   hg19.fa > paf; transanno minimap2chain paf --output chain`), contigs named
   like the numeric hg19 FASTA
 
