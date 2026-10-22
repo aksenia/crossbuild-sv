@@ -44,15 +44,17 @@ rule prep_native_vcf:
         HDR=$(mktemp)
         grep -E 'ID=(CUPs|DISCREPs),' {params.header} > $HDR
         bcftools view {params.pass_flag} {params.targets} -i '{params.sv_filter}' {input.vcf} \\
-            | {params.stamp_id} \\
-            | bcftools norm -f {params.fasta} -c w 2> {log} \\
+            | {params.stamp_id} | bgzip > {params.tmp}.gz
+        # Symbolic alleles bypass norm, as in normalize_liftover.
+        {{ bcftools view -e 'ALT~"^<"' {params.tmp}.gz | bcftools norm -f {params.fasta} -c w 2> {log}
+           bcftools view -H -i 'ALT~"^<"' {params.tmp}.gz; }} \\
             | python3 {params.script} --fasta {params.fasta} \\
                 --output {params.tmp} --reject {output.rejected} 2>> {log}
         bcftools sort {params.tmp} \\
             | bcftools annotate -a {params.cups} -c CHROM,FROM,TO -m +CUPs -h $HDR \\
             | bcftools annotate -a {params.discreps} -c CHROM,FROM,TO -m +DISCREPs -Oz -o {output.vcf}
         tabix -f {output.vcf}
-        rm -f {params.tmp} $HDR
+        rm -f {params.tmp} {params.tmp}.gz $HDR
         """
 
 

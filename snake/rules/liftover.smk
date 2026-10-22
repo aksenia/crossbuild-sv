@@ -259,7 +259,11 @@ rule normalize_liftover:
     shell:
         """
         # -c w: warn on REF mismatch; finalize_sv.py rejects those records.
-        bcftools norm -f {params.fasta} -c w {input.raw} 2> {log} \
+        # Symbolic alleles bypass norm (appended after the header-bearing
+        # stream; sorted below): they carry no sequence to align, and norm
+        # 1.22 shifts <DUP:TANDEM> left on its padding base and sets END=POS.
+        {{ bcftools view -e 'ALT~"^<"' {input.raw} | bcftools norm -f {params.fasta} -c w 2> {log}
+           bcftools view -H -i 'ALT~"^<"' {input.raw}; }} \
         | python3 {params.script} --tool {wildcards.tool} --source {input.source} \
             --chain {params.chain} --fasta {params.fasta} \
             --output {params.tmp} --reject {output.rejected} 2>> {log}

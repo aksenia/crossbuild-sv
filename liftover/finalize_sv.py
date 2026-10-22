@@ -11,7 +11,9 @@ representation. This script then:
     sequence-resolved   END = POS + len(REF) - 1
     symbolic INS        END = POS
     symbolic DEL/DUP/INV  source POS and END mapped through one chain record;
-                        accepted only if the mapped start equals the tool's POS
+                        accepted only if the mapped source POS equals the
+                        tool's POS (else END_NOT_IN_CHAIN / INVERTED_CHAIN /
+                        CHAIN_DOES_NOT_MATCH_TOOL_POS)
                         (native mode: the record's own END is kept)
 - tags INFO/LIFTOVER_TOOL=<tool> (tool mode only).
 
@@ -160,17 +162,30 @@ class ChainIndex:
                     t += int(fields[2])
 
     def target_end(self, src, target_chrom, target_pos):
-        """END for a symbolic interval, if one chain maps it onto the tool's POS."""
-        best = None
+        """
+        END for a symbolic interval, if one chain maps it onto the tool's POS
+        (its left end); else raise with the most specific reason. On an
+        inverted chain tools may keep POS at the mapped source POS, which is
+        then the interval's right end: rejected as INVERTED_CHAIN, not repaired.
+        """
+        best, reason = None, 'CHAIN_DOES_NOT_MATCH_TOOL_POS'
         for chain in self.by_source.get(bare_contig(src.chrom), []):
             if bare_contig(chain.target_name) != bare_contig(target_chrom):
                 continue
             a, b = chain.map_point(src.pos), chain.map_point(src.end)
-            if a is None or b is None or min(a, b) != target_pos:
+            if a is None:
                 continue
-            if best is None or chain.score > best[0]:
-                best = (chain.score, max(a, b))
-        return best[1] if best else None
+            if b is None:
+                if a == target_pos:
+                    reason = 'END_NOT_IN_CHAIN'
+            elif min(a, b) == target_pos:
+                if best is None or chain.score > best[0]:
+                    best = (chain.score, max(a, b))
+            elif a == target_pos:
+                reason = 'INVERTED_CHAIN'
+        if best is None:
+            raise ValueError(reason)
+        return best[1]
 
 
 def target_end(parts, info, source, chains):
@@ -179,6 +194,10 @@ def target_end(parts, info, source, chains):
     if any(a in ('.', '*') or '[' in a or ']' in a for a in alts):
         raise ValueError('UNSUPPORTED_ALT')
     symbolic = [is_symbolic(a) for a in alts]
+    # transanno reverse-complements a symbolic ALT on inverted chains
+    # (<DUP:TANDEM> -> XXXXNTAXXXXX)
+    if any(not s and not re.fullmatch(r'[ACGTNacgtn]+', a) for s, a in zip(symbolic, alts)):
+        raise ValueError('NON_BASE_ALT')
     if not any(symbolic):
         return pos + len(ref) - 1
     if not all(symbolic):
@@ -195,10 +214,7 @@ def target_end(parts, info, source, chains):
     src = source.get(parts[2])
     if src is None:
         raise ValueError('SOURCE_ID_NOT_FOUND')
-    end = chains.target_end(src, parts[0], pos)
-    if end is None:
-        raise ValueError('CHAIN_DOES_NOT_MATCH_TOOL_POS')
-    return end
+    return chains.target_end(src, parts[0], pos)
 
 
 def check_ref(fasta, chrom, pos, ref):
