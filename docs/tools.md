@@ -1,14 +1,16 @@
 # Liftover tools — SV-specific notes
 
 All four tools are included in the `crossbuild-sv` container and run on the
-same filtered, ID-stamped hg19 VCF. Their outputs are merged on the
-`CHROM/POS/ID` key (ID = `CHROM_POS_SVTYPE_END` from hg19).
+same filtered, ID-stamped hg19 VCF. Every output is normalized the same way
+(`normalize_liftover`) and merged on `CHROM/POS/END/ID`
+(ID = `CHROM_POS_SVTYPE_END` from hg19). Observed behaviour on real data is
+summarised at the end.
 
 ---
 
 ## CrossMap
 
-**Version tested:** 0.7.x  
+**Version tested:** 0.7.3 (pinned; an unpinned version rejected most sequence-resolved DELs as `Fail(REF==ALT)`)  
 **Input:** chr-prefixed hg19 VCF (after `normalize_contigs`)
 
 CrossMap has two subcommands relevant to SVs:
@@ -42,8 +44,8 @@ CrossMap has two subcommands relevant to SVs:
 
 **Known limitations:**
 
-- Records that fail to lift appear in `<sample>.hg38.unmap` (not in the main
-  rejected VCF — check this file separately).
+- Records that fail to lift appear in `<sample>.hg38.unmap.vcf` (reason in
+  the last column, e.g. `Fail(Unmap)`).
 - `CrossMap region` is not used in this pipeline but is worth running
   separately to flag SVs with low chain-mapping ratios.
 
@@ -120,8 +122,10 @@ thresholds rather than producing uncertain liftovers.
 
 **Known limitations:**
 
-- Rejected records go to `<sample>.rejected.vcf` and are annotated with
-  `PICARD_REJECT_REASON` in the merged output.
+- Rejected records go to `<sample>.rejected.vcf`; the merged output carries
+  `PICARD_REJECT_REASON` for source IDs Picard rejected.
+- No ALT pre-filter: an IUPAC regex once used here silently dropped every
+  symbolic allele.
 
 ---
 
@@ -155,13 +159,15 @@ the other three tools). It is primarily designed for SNV/indel liftover.
 **Known limitations:**
 
 - Expects a minimap2-generated chain in transanno's own format — not the
-  standard UCSC `.over.chain`. See `preprocess/` docs for chain build
-  instructions.
+  standard UCSC `.over.chain` (`transanno minimap2chain`, see
+  [pipeline.md](pipeline.md#2-reference-data)).
 - `--no-left-align-chain` (note: different from bcftools's `--no-left-align`)
   prevents the provided chain from losing its 1-to-1 mapping properties during
   processing; may be needed for chains built from assemblies with complex
   rearrangements.
 - Check `<sample>.log` and `<sample>.rejected.vcf` for rejection details.
+  `FAILED_REASON` is appended to INFO without a `;` separator, so it ends up
+  glued to the previous INFO value; parse it with a regex.
 - The transanno chain is built against numeric-contig reference FASTAs; the
   pipeline strips chr prefixes before running transanno.
 
@@ -178,3 +184,38 @@ the other three tools). It is primarily designed for SNV/indel liftover.
 | Chain format | UCSC | UCSC | UCSC | minimap2 (transanno) |
 | Key SV flag | `--no-comp-alleles` | `--no-left-align` | `LIFTOVER_MIN_MATCH=0.0` | `--noswap`, `--allow-multi-map` |
 | Notable alternative | `CrossMap region` (BED) | `--lift-end` for large SVs | default match=1.0 | `--no-left-align-chain` |
+
+---
+
+## Observed behaviour (HG002 DRAGEN, whole genome, 16,930 source SVs)
+
+Yield = source IDs in the tool's normalized output. QC = lifted by the tool
+but rejected by `finalize_sv.py`.
+
+| | CrossMap | bcftools | Picard | Transanno |
+| --- | --- | --- | --- | --- |
+| Yield | 99.8% | 99.6% | 98.7% | 99.4% |
+| Tool rejections | 34 `Fail(Unmap)` | 39 ApartAnchors, 15 MismatchAnchors, 17 Unmapped* | 142 IndelStraddlesMultipleIntervals, 64 NoTarget, 19 MismatchedRefAllele, 4 CannotLiftOver | 42 LARGE_INSERTION, 11 LARGE_DELETION, 35 NO_CHAIN, 12 MULTIMAP |
+| QC rejections | 5 INVERTED_CHAIN, 1 END_NOT_IN_CHAIN | same | — | 4 NON_BASE_ALT, 1 END_NOT_IN_CHAIN |
+
+Findings to keep in mind when reading results (reported, not "fixed"):
+
+- **Picard rejects every symbolic DUP** (`IndelStraddlesMultipleIntervals`):
+  it treats the REF span as a DUP-length indel even with
+  `LIFTOVER_MIN_MATCH=0.0`.
+- **CrossMap truncates REF of complex INS** (DRAGEN INS with REF > 1 bp) to
+  one base, and at REF-changed loci rewrites REF from hg38 without any flag.
+  This drives its lower exact-position rate vs native (~0.91 vs ~0.99; on
+  chr14/21/Y, 65 of 78 non-exact CrossMap matches are INS).
+- **CrossMap does not lift END of symbolic DUPs** (writes END=POS); the
+  pipeline recomputes END through the chain for all tools anyway.
+- **Inverted chain segments**: CrossMap and bcftools keep POS at the mapped
+  source POS (the right end of the hg38 interval; bcftools adds `FLIP`);
+  transanno reverse-complements the symbolic ALT (`<DUP:TANDEM>` →
+  `XXXXNTAXXXXX`). All are rejected in QC.
+- **bcftools `norm` mangles symbolic `<DUP:TANDEM>`** (shifts POS on the
+  padding base, resets END=POS), so symbolic records bypass norm.
+- **Transanno** writes `FAILED_REASON` without a `;` separator, and warns that
+  FORMAT fields with Number=G (PL) are not rewritten when it swaps REF/ALT.
+- REF-changed loci: bcftools (`SWAP`) and transanno (`REF_CHANGED`) flag them;
+  CrossMap and Picard do not. They are split into the refchanged set.

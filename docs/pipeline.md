@@ -1,72 +1,88 @@
-# sv-preprocess
+# Pipeline
 
-Liftover pipeline for structural variants (SVs) from hg19 to hg38. Runs four
-independent tools in parallel, merges their outputs, and annotates with
-genomic region flags (CUPs, DISCREPs, CENTEL, SEGDUP).
+Lifts a single-sample hg19 SV VCF to hg38 with four tools, normalizes and
+merges their outputs into one exhaustive hg38 set, adds region flags, and
+(optionally) compares the lifted calls with native hg38 calls of the same
+individual.
 
-Designed as a companion to `preprocess/` (which handles SNVs/indels). The
-output VCFs feed into a downstream SV comparison and prioritisation tool.
-
-## Pipeline overview
+## Overview
 
 ```
 input hg19 SV VCF
        │
        ▼
- filter to target SVTYPE           config: sv_types (DEL, DUP, DUP:TANDEM, INS, INV)
- optionally require PASS            config: pass_only (default: true)
- stamp hg19 ID: CHROM_POS_SVTYPE_END
+ prep_source_vcf        filter SVTYPE (sv_types), PASS (pass_only), contigs;
+                        stamp ID = CHROM_POS_SVTYPE_END (hg19), _2,_3 on collisions
        │
-       ├──────────────────────────────────────────────┐
-       │                                              │
-       ▼                                              ▼
- normalize contigs                           transanno liftvcf
- (add chr prefix)                            (uses bare contig names)
+       ├──────────────────────────────┐
+       ▼                              ▼
+ normalize_contigs              transanno liftvcf
+ (add chr prefix)               (bare contigs, own chain)
        │
-       ├──────────────┬─────────────────┐
-       ▼              ▼                 ▼
- CrossMap vcf   bcftools +liftover   Picard LiftoverVcf
-                (--no-left-align)    (LIFTOVER_MIN_MATCH=0.0)
-       │              │                 │               │ (transanno)
-       └──────────────┴─────────────────┴───────────────┘
-                             │
-                             ▼
-                  tag each output with LIFTOVER_TOOL
-                             │
-                             ▼
-                   merge (collapse identical
-                   CHROM/POS/ID records;
-                   keep separate lines when
-                   tools disagree on position)
-                             │
-               ┌─────────────┴─────────────┐
-               ▼                           ▼
-  annotate hg19 source VCF      annotate merged hg38 VCF
-  (CUPs, DISCREPs, CENTEL,      (CUPs, DISCREPs)
-   SEGDUP)
+       ├────────────┬────────────────┐
+       ▼            ▼                ▼
+ CrossMap vcf  bcftools +liftover  Picard LiftoverVcf
+               (--no-left-align)   (LIFTOVER_MIN_MATCH=0.0)
+       │            │                │               │
+       └────────────┴───────┬────────┴───────────────┘
+                            ▼
+ normalize_liftover     per tool: bcftools norm (non-symbolic records) +
+                        finalize_sv.py (REF check, END, LIFTOVER_TOOL) → qc_rejected
+                            │
+                            ▼
+ refchanged_ids         IDs any tool flags as REF-changed (multiallelic / SWAP / REF_CHANGED)
+                            │
+                            ▼
+ merge_liftovers        collapse identical CHROM/POS/END/ID; disagreements stay
+                        as separate lines; REF-changed IDs → refchanged set
+                            │
+               ┌────────────┴─────────────┐
+               ▼                          ▼
+ annotate_regions_hg19         annotate_regions_hg38
+ (CUPs, DISCREPs, CENTEL,      (CUPs, DISCREPs; merged + refchanged)
+  SEGDUP)
+                            │
+                            ▼  (only when native_vcf is set)
+ comparison             native prep → per tool × set SVDB link → links + metrics
+                        (docs/comparison.md)
 ```
 
 ### Key design choices
 
-- **ID scheme**: each variant is stamped `CHROM_POS_SVTYPE_END` (hg19 coords)
-  before liftover. All tools preserve the ID, so concordance can be tracked
-  across tools regardless of hg38 coordinate.
-- **Merge key**: records are merged on `CHROM/POS/ID` (hg38). Tools that lift
-  the same variant to the same position are collapsed into one record with a
-  comma-joined `LIFTOVER_TOOL` INFO value. Tools that disagree on position
-  produce separate records.
-- **No VEP**: VEP annotation is out of scope for this pipeline.
+- **ID scheme**: each source record is stamped `CHROM_POS_SVTYPE_END`
+  (hg19 coords) with awk before liftover (`bcftools --set-id` misparses
+  `%INFO/SVTYPE_`). Distinct records sharing a key get `_2`, `_3`, … in file
+  order. All tools preserve the ID, so a source variant is tracked across
+  tools regardless of its hg38 coordinates. Native hg38 calls get the same
+  stamp in hg38 coordinates.
+- **Normalization before merge**: tools differ in allele spelling (bcftools
+  pads REF/ALT, transanno drops a shared padding base). `bcftools norm`
+  left-aligns and trims sequence-resolved records; `finalize_sv.py` checks REF
+  against hg38 and sets END from the normalized record. Symbolic records
+  bypass `bcftools norm` (no sequence to align; norm 1.22 shifts
+  `<DUP:TANDEM>` and resets END=POS); their END is mapped through the chain
+  from the source POS/END, accepted only if the chain maps the source POS onto
+  the tool's POS.
+- **Merge key**: `CHROM/POS/END/ID` (not REF/ALT; SV alleles can be kb
+  long). Tools agreeing on a placement collapse into one record with
+  comma-joined `LIFTOVER_TOOL`; any remaining difference is a real
+  disagreement and stays on its own line.
+- **REF-changed set**: at loci where the hg38 reference carries a different
+  allele than hg19 (multiallelic ALT, bcftools `SWAP`, transanno
+  `REF_CHANGED`) the lifted record is not a like-for-like SV. Every tool's
+  record of such an ID goes to `merged/<s>.refchanged.hg38.vcf.gz` with
+  `REFCHANGED_BY`, so a tool that silently mis-handles the locus does not
+  leave it in the main set.
 
 ## Supported SV types
 
-Configured via `sv_types` in `config.yaml`. Anything else (e.g. BND) is
-dropped at the filter step.
+Configured via `sv_types`; anything else is dropped at the filter step. BND is
+out of scope.
 
 | SVTYPE | Notes |
 |---|---|
 | DEL | Sequence-resolved or symbolic `<DEL>` |
-| DUP | Symbolic `<DUP>` |
-| DUP:TANDEM | DRAGEN tandem duplication |
+| DUP | Symbolic `<DUP>`; DRAGEN tandem duplications are `SVTYPE=DUP`, ALT `<DUP:TANDEM>` |
 | INS | Sequence-resolved or symbolic `<INS>` |
 | INV | Symbolic `<INV>` |
 
@@ -74,113 +90,94 @@ dropped at the filter step.
 
 ### 1. Build the container
 
-Build from the **repo root** (so the Dockerfile can reference `preprocess/regions/`):
-
 ```bash
-docker build -f sv-preprocess/Dockerfile -t crossbuild-sv:latest .
+docker build -t crossbuild-sv:latest .
 ```
 
-For HPC / air-gapped environments, export as a Singularity/Apptainer SIF:
+The image contains CrossMap 0.7.3, bcftools 1.22 + liftover plugin, Picard
+3.4.0, transanno 0.4.5, SVDB 2.12.0, truvari 5.3.0, snakemake 8.30, the
+pipeline code under `/app` and the region BEDs under `/app/regions/`.
+
+For HPC / Apptainer:
 
 ```bash
 apptainer build crossbuild-sv.sif docker-daemon://crossbuild-sv:latest
 ```
 
-### 2. Extract pipeline files from the SIF (one-time, on HPC)
+### 2. Reference data
 
-Snakemake must run **on the host** so it can dispatch per-rule containers.
-Extract `snake/` from the SIF once:
-
-```bash
-cd /your/analysis/dir
-singularity exec crossbuild-sv.sif bash -c 'cd /app && tar cf - snake' \
-    | tar -xf - -C .
-```
+- **hg19 FASTA** + `.fai`, numeric contigs (`1`, `2`, …) — Picard source, transanno
+- **hg19 FASTA chr-prefixed** + `.fai` — `bcftools +liftover` source
+- **hg38 FASTA** + `.fai` + `.dict`, chr-prefixed
+- **hg19→hg38 UCSC chain** (`hg19ToHg38.over.chain`) — CrossMap, bcftools, Picard
+- **Transanno chain** — built with minimap2 (`minimap2 -cx asm5 --cs hg38.fa
+  hg19.fa > paf; transanno minimap2chain paf --output chain`), contigs named
+  like the numeric hg19 FASTA
 
 ### 3. Configure
 
-Edit `snake/config.yaml` (extracted from the SIF or copied from this repo):
+Copy `snake/config.yaml` and set at least `sample`, `input_vcf`,
+`results_dir` and the `ref:` paths (all as seen inside the container). There
+is no default configfile: `--configfile` is required.
 
-```yaml
-sample: my_sample
-input_vcf: /data/my_sample.hg19.sv.vcf.gz
-results_dir: /results
-
-sv_types: [DEL, DUP, "DUP:TANDEM", INS, INV]
-pass_only: true          # set false to keep non-PASS records
-
-liftover_tools: [crossmap, bcftools, picard, transanno]
-
-ref:
-  hg19_fasta: /ref/hg19.fa
-  hg19_fasta_chr: /ref/hg19.chr.fa     # chr-prefixed, required by bcftools +liftover
-  hg38_fasta: /ref/hg38.fa
-  liftover_chain: /ref/hg19ToHg38.over.chain
-  transanno_chain: /ref/transanno.hg19tohg38.chain
-
-container_image: "/path/to/crossbuild-sv.sif"   # or docker://crossbuild-sv:latest
-```
-
-Region BED paths default to `/app/regions/` inside the container — no changes
-needed unless you bind-mount them elsewhere.
+| Key | Meaning |
+|---|---|
+| `sample` | sample ID, used in file names and `sample_id` columns |
+| `input_vcf` | hg19 SV VCF (single sample) |
+| `native_vcf` | optional native hg38 VCF of the same individual; enables comparison |
+| `contigs` | optional hg19 contig subset in source naming (e.g. `["14", "21", "Y"]`); `[]` = whole genome. Native is restricted to the same contigs |
+| `sv_types`, `pass_only` | source/native filter |
+| `liftover_tools` | subset/order of `crossmap, bcftools, picard, transanno` |
+| `comparison.svdb_overlap`, `comparison.svdb_profile` | SVDB linking parameters |
 
 ### 4. Run
 
-```bash
-module load Singularity
-module load snakemake/8.4.2
+Snakemake runs inside the container (all tools are there):
 
-snakemake \
-    --snakefile /path/to/snake/Snakefile \
-    --configfile /path/to/config.yaml \
-    --use-singularity \
-    --singularity-args "--no-home \
-        -B /path/to/hg19.fa:/ref/hg19.fa \
-        -B /path/to/hg19.fa.fai:/ref/hg19.fa.fai \
-        -B /path/to/hg19.chr.fa:/ref/hg19.chr.fa \
-        -B /path/to/hg19.chr.fa.fai:/ref/hg19.chr.fa.fai \
-        -B /path/to/hg38.fa:/ref/hg38.fa \
-        -B /path/to/hg38.fa.fai:/ref/hg38.fa.fai \
-        -B /path/to/hg38.fa.dict:/ref/hg38.fa.dict \
-        -B /path/to/hg19ToHg38.over.chain:/ref/hg19ToHg38.over.chain \
-        -B /path/to/transanno.chain:/ref/transanno.hg19tohg38.chain \
-        -B /path/to/data:/data \
-        -B /path/to/results:/results" \
-    --cores 8
+```bash
+docker run --rm --user $(id -u):$(id -g) --env HOME=/tmp \
+    -v /path/to/ref:/ref:ro -v /path/to/data:/data:ro \
+    -v /path/to/results:/results crossbuild-sv:latest \
+    snakemake --snakefile /app/snake/Snakefile --configfile /results/config.yaml \
+    --directory /results --cores 8
 ```
 
-Add `-n` for a dry run.
+Add `-n` for a dry run. If reference files are symlinks, mount their targets
+at the same path. To work on the code without rebuilding, mount the
+repo's `snake/`, `liftover/` and `regions/` over `/app/...`.
 
-## Reference data
+With Apptainer, the same command works via `apptainer exec -B ... crossbuild-sv.sif snakemake ...`.
 
-Same requirements as `preprocess/` for the liftover references:
-
-- **hg19 FASTA** + `.fai` — numeric contig names (`1`, `2` …)
-- **hg19 FASTA chr-prefixed** + `.fai` — required by `bcftools +liftover`
-- **hg38 FASTA** + `.fai` + `.dict`
-- **hg19→hg38 UCSC chain** (`hg19ToHg38.over.chain`)
-- **Transanno chain** — minimap2-generated; see `preprocess/` docs for build instructions
-
-All region BED files (CUPs, DISCREPs, CENTEL, SEGDUP) are pre-built and
-shipped inside the container at `/app/regions/`.
+A whole-genome HG002 DRAGEN run (~17k source SVs, with comparison) takes
+about 2–3 minutes on 8 cores.
 
 ## Outputs
 
 | File | Description |
 |---|---|
-| `annotated/source/<sample>.hg19.annotated.vcf.gz` | Filtered, ID-stamped hg19 VCF with region flags |
-| `annotated/merged/<sample>.merged.hg38.annotated.vcf.gz` | Merged hg38 VCF with LIFTOVER_TOOL + region flags |
-| `liftover/<tool>/<sample>.hg38.vcf.gz` | Per-tool hg38 liftover output |
-| `liftover/<tool>/<sample>.rejected.vcf` | Per-tool rejected records |
-| `liftover/transanno/<sample>.log` | Transanno run log |
+| `liftover/source/<s>.hg19.vcf.gz` | Filtered, ID-stamped source VCF |
+| `liftover/<tool>/<s>.hg38.raw.vcf.gz` | Tool output as written by the tool (sorted) |
+| `liftover/<tool>/<s>.hg38.vcf.gz` | Normalized, finalized per-tool hg38 VCF (`LIFTOVER_TOOL`) |
+| `liftover/<tool>/<s>.rejected.vcf` | Tool rejections (CrossMap: `<s>.hg38.unmap.vcf`) |
+| `liftover/<tool>/<s>.qc_rejected.vcf` | Lifted but failed post-liftover QC (`QC_REJECT_REASON`) |
+| `liftover/<tool>/<s>.normalize.log` | `bcftools norm` / finalize log |
+| `liftover/transanno/<s>.log` | Transanno run log |
+| `liftover/merged/<s>.refchanged_ids.tsv` | `ID<TAB>tool` for every REF-changed flag |
+| `annotated/source/<s>.hg19.annotated.vcf.gz` | Source VCF with region flags |
+| `annotated/merged/<s>.merged.hg38.annotated.vcf.gz` | Merged main set with region flags |
+| `annotated/merged/<s>.refchanged.hg38.annotated.vcf.gz` | Merged REF-changed set with region flags |
+| `comparison/native/<s>.hg38.vcf.gz` | Prepared native calls (+ `qc_rejected.vcf`) |
+| `comparison/svdb/<tool>.<set>.vcf` | Raw SVDB link output |
+| `comparison/<s>.links.tsv.gz`, `comparison/<s>.metrics.tsv` | See [comparison.md](comparison.md) |
 
-### Key INFO fields in the merged hg38 VCF
+### INFO fields in the merged hg38 VCFs
 
 | Field | Description |
 |---|---|
-| `LIFTOVER_TOOL` | Comma-joined list of tools that produced this position (e.g. `crossmap,bcftools,picard`) |
-| `SVTYPE` | Original SV type from hg19 |
-| `END` | hg38 end coordinate (updated by all tools except where noted) |
-| `SVLEN` | SV length (preserved from hg19) |
-| `PICARD_REJECT_REASON` | Why Picard rejected this variant (when applicable) |
-| `CUPs` / `DISCREPs` / `CENTEL` / `SEGDUP` | Region overlap flags (hg19 source VCF) |
+| `LIFTOVER_TOOL` | Comma-joined tools that produced this placement |
+| `END` | hg38 end, recomputed by `finalize_sv.py` |
+| `SVTYPE`, `SVLEN` | From the source record |
+| `PICARD_REJECT_REASON` (+ `PICARD_ATTEMPTED_*`) | Why Picard rejected this source variant |
+| `MULTIMAP`, `REF_CHANGED` | Carried from transanno |
+| `REFCHANGED_BY` | refchanged set: tools that flagged the ID |
+| `CUPs` / `DISCREPs` | hg38 region overlap flags (`CENTEL`, `SEGDUP` are on the hg19 source only) |
