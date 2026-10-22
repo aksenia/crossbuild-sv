@@ -73,13 +73,18 @@ rule annotate_regions_hg19:
 
 
 rule annotate_regions_hg38:
-    """Tag merged hg38 VCF with CUPs and DISCREPs flags (Ormond 2021, Li 2021)."""
+    """
+    Tag merged hg38 VCFs (main set and REF-changed set) with CUPs and
+    DISCREPs flags (Ormond 2021, Li 2021).
+    """
     input:
-        vcf = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz",
-        tbi = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz.tbi",
+        vcf = f"{LIFTOVER_DIR}/merged/{SAMPLE}.{{part}}.hg38.vcf.gz",
+        tbi = f"{LIFTOVER_DIR}/merged/{SAMPLE}.{{part}}.hg38.vcf.gz.tbi",
     output:
-        vcf = f"{ANNOT_DIR}/merged/{SAMPLE}.merged.hg38.annotated.vcf.gz",
-        tbi = f"{ANNOT_DIR}/merged/{SAMPLE}.merged.hg38.annotated.vcf.gz.tbi"
+        vcf = f"{ANNOT_DIR}/merged/{SAMPLE}.{{part}}.hg38.annotated.vcf.gz",
+        tbi = f"{ANNOT_DIR}/merged/{SAMPLE}.{{part}}.hg38.annotated.vcf.gz.tbi"
+    wildcard_constraints:
+        part = "merged|refchanged"
     params:
         cups    = config["regions"]["cups_hg38"],
         cups_tbi= config["regions"]["cups_hg38"] + ".tbi",

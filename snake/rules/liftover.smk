@@ -267,32 +267,66 @@ rule normalize_liftover:
         rm -f {params.tmp}
         """
 
-# ─── 8. Merge all normalized VCFs into one hg38 VCF ─────────────────────────
+# ─── 8. Source variants whose reference allele changed between builds ──────
+rule refchanged_ids:
+    """
+    List source IDs that any tool flags as REF-changed: a multiallelic ALT,
+    bcftools INFO/SWAP or transanno INFO/REF_CHANGED. At such loci the hg38
+    reference carries a different allele than hg19 (e.g. the deleted sequence
+    is already absent), so the lifted call is not a like-for-like SV; they are
+    merged and reported separately. Read with awk, not bcftools -i, because
+    the flags are only declared in the headers of the tools that set them.
+    """
+    input:
+        vcfs = expand(f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz", tool=TOOLS)
+    output:
+        ids = f"{LIFTOVER_DIR}/merged/{SAMPLE}.refchanged_ids.tsv"
+    params:
+        tools = TOOLS
+    shell:
+        """
+        mkdir -p {LIFTOVER_DIR}/merged
+        set -- {params.tools}
+        for vcf in {input.vcfs}; do
+            zcat $vcf | awk -F'\t' -v t=$1 '!/^#/ && ($5 ~ /,/ || $8 ~ /(^|;)(SWAP|REF_CHANGED)(=|;|$)/) {{print $3 "\t" t}}'
+            shift
+        done | sort -u > {output.ids}
+        """
+
+# ─── 9. Merge all normalized VCFs into one hg38 VCF ─────────────────────────
 rule merge_liftovers:
     """
     Concatenate per-tool hg38 VCFs, sort, then collapse records with identical
     CHROM/POS/END/ID by joining their LIFTOVER_TOOL values. After
     normalization a remaining POS or END difference is a real coordinate
     disagreement and stays on its own line with its own LIFTOVER_TOOL tag.
+    Records of REF-changed IDs (from every tool) go to the refchanged VCF.
     """
     input:
         vcfs = expand(f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz", tool=TOOLS),
-        tbis = expand(f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz.tbi", tool=TOOLS)
+        tbis = expand(f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz.tbi", tool=TOOLS),
+        ids  = rules.refchanged_ids.output.ids
     output:
-        vcf = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz",
-        tbi = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz.tbi"
+        vcf    = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz",
+        tbi    = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz.tbi",
+        rc_vcf = f"{LIFTOVER_DIR}/merged/{SAMPLE}.refchanged.hg38.vcf.gz",
+        rc_tbi = f"{LIFTOVER_DIR}/merged/{SAMPLE}.refchanged.hg38.vcf.gz.tbi"
     params:
         script          = f"{SCRIPTS}/merge_tools.py",
+        rc_tmp          = f"{LIFTOVER_DIR}/merged/{SAMPLE}.refchanged.tmp.vcf",
         picard_rejected = (f"{LIFTOVER_DIR}/picard/{SAMPLE}.rejected.vcf"
                            if 'picard' in TOOLS else "")
     shell:
         """
-        mkdir -p {LIFTOVER_DIR}/merged
         PICARD_FLAG=""
         [ -n "{params.picard_rejected}" ] && PICARD_FLAG="--picard-rejected {params.picard_rejected}"
         bcftools concat --allow-overlaps {input.vcfs} \
             | bcftools sort \
             | python3 {params.script} $PICARD_FLAG \
+                --refchanged-ids {input.ids} --refchanged-out {params.rc_tmp} \
             | bgzip > {output.vcf}
         tabix -f {output.vcf}
+        bgzip -c {params.rc_tmp} > {output.rc_vcf}
+        tabix -f {output.rc_vcf}
+        rm -f {params.rc_tmp}
         """
