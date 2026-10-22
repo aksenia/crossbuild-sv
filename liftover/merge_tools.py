@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Collapse sorted VCF records with identical CHROM/POS/ID, joining their
-LIFTOVER_TOOL INFO values into a comma-separated list.
+Collapse sorted, normalized VCF records with identical CHROM/POS/END/ID,
+joining their LIFTOVER_TOOL values into a comma-separated list.
 
-For SVs the merge key is CHROM/POS/ID (the ID was stamped as
-CHROM_POS_SVTYPE_END in hg19 coordinates before liftover).
-Records at the same hg38 position but with different IDs — i.e. from
-different hg19 variants — are kept separate.
+The ID was stamped as CHROM_POS_SVTYPE_END in hg19 coordinates before
+liftover, so it identifies the source variant; CHROM/POS/END is where a tool
+put it on hg38. Inputs are normalized first (normalize_liftover), so equal
+coordinates mean the tools agree and any difference is a real disagreement.
+REF/ALT are not compared (SV alleles can be kb long); the first tool in
+TOOL_ORDER supplies the record.
 
 Also:
 - Carries tool-specific INFO fields (e.g. transanno MULTIMAP/REF_CHANGED).
@@ -15,8 +17,10 @@ Also:
 
 Reads from stdin (sorted VCF), writes to stdout.
 """
-import sys
 import argparse
+import sys
+
+TOOL_ORDER = ('crossmap', 'bcftools', 'picard', 'transanno')
 
 _TOOL_FIELDS = {
     'transanno': ('MULTIMAP', 'REF_CHANGED'),
@@ -41,13 +45,15 @@ def parse_info(info_str):
 
 
 def format_info(d):
-    parts = []
-    for k, v in d.items():
-        if v is True:
-            parts.append(k)
-        else:
-            parts.append(f'{k}={v}')
-    return ';'.join(parts)
+    return ';'.join(k if v is True else f'{k}={v}' for k, v in d.items())
+
+
+def tools_of(info):
+    return [t for t in str(info.get('LIFTOVER_TOOL', '')).split(',') if t]
+
+
+def tool_rank(tool):
+    return TOOL_ORDER.index(tool) if tool in TOOL_ORDER else len(TOOL_ORDER)
 
 
 def load_picard_rejected(path):
@@ -60,11 +66,9 @@ def load_picard_rejected(path):
             parts = line.rstrip('\n').split('\t')
             if len(parts) < 8:
                 continue
-            vid    = parts[2]   # ID stamped as CHROM_POS_SVTYPE_END in hg19
-            reason = parts[6]
-            info   = parse_info(parts[7])
-            rejected[vid] = {
-                'reason':  reason,
+            info = parse_info(parts[7])
+            rejected[parts[2]] = {
+                'reason':  parts[6],
                 'locus':   info.get('AttemptedLocus', ''),
                 'alleles': info.get('AttemptedAlleles', ''),
             }
@@ -72,9 +76,9 @@ def load_picard_rejected(path):
 
 
 def _apply_picard(variant_id, info, picard_rejected):
-    if not picard_rejected or variant_id not in picard_rejected:
+    rec = picard_rejected.get(variant_id)
+    if not rec:
         return
-    rec = picard_rejected[variant_id]
     info['PICARD_REJECT_REASON'] = rec['reason']
     if rec['locus']:
         info['PICARD_ATTEMPTED_LOCUS'] = rec['locus']
@@ -83,37 +87,35 @@ def _apply_picard(variant_id, info, picard_rejected):
 
 
 def flush_group(records, picard_rejected):
-    if not records:
-        return
+    """Write one merged record for records sharing CHROM/POS/END/ID."""
+    infos = [parse_info(p[7]) for p in records]
+    order = sorted(range(len(records)), key=lambda i: min(map(tool_rank, tools_of(infos[i])), default=99))
+    merged, info = list(records[order[0]]), infos[order[0]]
 
-    merged = list(records[0])
-
-    if len(records) == 1:
-        info = parse_info(merged[7])
-        _apply_picard(merged[2], info, picard_rejected)
-        merged[7] = format_info(info)
-        sys.stdout.write('\t'.join(merged) + '\n')
-        return
-
-    seen = {}
-    info = parse_info(merged[7])
-    for i, parts in enumerate(records):
-        rec_info = info if i == 0 else parse_info(parts[7])
-        for t in rec_info.get('LIFTOVER_TOOL', '').split(','):
-            t = t.strip()
-            if t:
-                seen[t] = True
-        tool = rec_info.get('LIFTOVER_TOOL', '')
+    tools = {t for i in infos for t in tools_of(i)}
+    for rec_info in infos:
         for tool_name, fields in _TOOL_FIELDS.items():
-            if tool_name in tool:
-                for field in fields:
-                    if field in rec_info:
-                        info[field] = rec_info[field]
+            if tool_name in tools_of(rec_info):
+                info.update({f: rec_info[f] for f in fields if f in rec_info})
 
-    info['LIFTOVER_TOOL'] = ','.join(seen.keys())
+    info['LIFTOVER_TOOL'] = ','.join(sorted(tools, key=tool_rank))
     _apply_picard(merged[2], info, picard_rejected)
     merged[7] = format_info(info)
     sys.stdout.write('\t'.join(merged) + '\n')
+
+
+def flush_position(records, picard_rejected):
+    """
+    Group all records at one CHROM/POS by END/ID. Sorting is by CHROM/POS
+    only, so records of different IDs can interleave at the same position;
+    grouping consecutive lines alone would split one ID into several records.
+    """
+    groups = {}
+    for parts in records:
+        end = parse_info(parts[7])['END']   # always set by finalize_sv.py
+        groups.setdefault((int(end), parts[2]), []).append(parts)
+    for key in sorted(groups):
+        flush_group(groups[key], picard_rejected)
 
 
 def main():
@@ -125,8 +127,8 @@ def main():
     picard_rejected = load_picard_rejected(args.picard_rejected) if args.picard_rejected else {}
     picard_headers_injected = not picard_rejected
 
-    prev_key = None
-    group = []
+    prev_pos = None
+    bucket = []
 
     for raw_line in sys.stdin:
         line = raw_line.rstrip('\n')
@@ -139,20 +141,15 @@ def main():
             continue
 
         parts = line.split('\t')
-        if len(parts) < 8:
-            sys.stdout.write(line + '\n')
-            continue
+        pos = (parts[0], parts[1])
+        if pos != prev_pos and bucket:
+            flush_position(bucket, picard_rejected)
+            bucket = []
+        bucket.append(parts)
+        prev_pos = pos
 
-        # Merge key: CHROM / POS / ID  (ID = CHROM_POS_SVTYPE_END from hg19)
-        key = (parts[0], parts[1], parts[2])
-        if key != prev_key:
-            flush_group(group, picard_rejected)
-            group = [parts]
-            prev_key = key
-        else:
-            group.append(parts)
-
-    flush_group(group, picard_rejected)
+    if bucket:
+        flush_position(bucket, picard_rejected)
 
 
 if __name__ == '__main__':

@@ -89,13 +89,12 @@ rule crossmap_liftover:
     input:
         vcf = rules.normalize_contigs.output.vcf
     output:
-        vcf   = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.vcf.gz",
-        tbi   = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.vcf.gz.tbi",
+        vcf   = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.raw.vcf.gz",
         unmap = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.unmap.vcf"
     params:
         chain = config["ref"]["liftover_chain"],
         fasta = config["ref"]["hg38_fasta"],
-        raw   = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.raw.vcf"
+        raw   = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.tmp.vcf"
     shell:
         """
         mkdir -p {LIFTOVER_DIR}/crossmap
@@ -104,7 +103,6 @@ rule crossmap_liftover:
             && mv {params.raw}.unmap {output.unmap} \
             || touch {output.unmap}
         bcftools sort -Oz -o {output.vcf} {params.raw}
-        tabix -f {output.vcf}
         rm -f {params.raw}
         """
 
@@ -112,14 +110,13 @@ rule crossmap_liftover:
 rule bcftools_liftover:
     """
     Lift to hg38 with bcftools +liftover.
-    --no-left-align: prevents re-anchoring large indel/SV sequences after lift,
-    which would shift POS and corrupt the INFO/END coordinate.
+    --no-left-align: keep the tool's own placement; left-alignment is applied
+    to every tool alike in normalize_liftover, which also recomputes END.
     """
     input:
         vcf = rules.normalize_contigs.output.vcf
     output:
-        vcf      = f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.hg38.vcf.gz",
-        tbi      = f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.hg38.vcf.gz.tbi",
+        vcf      = f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.hg38.raw.vcf.gz",
         rejected = f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.rejected.vcf"
     params:
         chain = config["ref"]["liftover_chain"],
@@ -136,7 +133,6 @@ rule bcftools_liftover:
                --reject {output.rejected} \
                --write-reject \
             | bcftools sort -Oz -o {output.vcf}
-        tabix -f {output.vcf}
         """
 
 # ─── 5. Picard LiftoverVcf ────────────────────────────────────────────────────
@@ -151,8 +147,7 @@ rule picard_liftover:
     input:
         vcf = rules.normalize_contigs.output.vcf
     output:
-        vcf      = f"{LIFTOVER_DIR}/picard/{SAMPLE}.hg38.vcf.gz",
-        tbi      = f"{LIFTOVER_DIR}/picard/{SAMPLE}.hg38.vcf.gz.tbi",
+        vcf      = f"{LIFTOVER_DIR}/picard/{SAMPLE}.hg38.raw.vcf.gz",
         rejected = f"{LIFTOVER_DIR}/picard/{SAMPLE}.rejected.vcf"
     params:
         chain     = config["ref"]["liftover_chain"],
@@ -163,7 +158,7 @@ rule picard_liftover:
     shell:
         """
         mkdir -p {LIFTOVER_DIR}/picard
-        RAW={LIFTOVER_DIR}/picard/{SAMPLE}.hg38.raw.vcf
+        RAW={LIFTOVER_DIR}/picard/{SAMPLE}.hg38.tmp.vcf
         PATCHED={LIFTOVER_DIR}/picard/{SAMPLE}.hg19.patched.vcf.gz
 
         bcftools view {input.vcf} \
@@ -182,7 +177,6 @@ rule picard_liftover:
             -VALIDATION_STRINGENCY LENIENT \
             -CREATE_INDEX false
         bcftools sort -Oz -o {output.vcf} $RAW
-        tabix -f {output.vcf}
         rm -f $RAW $PATCHED $PATCHED.tbi
         """
 
@@ -192,14 +186,12 @@ rule transanno_liftover:
     Lift to hg38 with Transanno liftvcf.
     Takes the non-chr-prefixed source VCF directly (transanno chain uses numeric
     contig names). Strips chr prefix if present (chrM -> MT).
-    Note: transanno may reject large sequence-resolved SVs; rejected records
-    simply won't carry the transanno LIFTOVER_TOOL tag.
+    Note: transanno may reject large sequence-resolved SVs.
     """
     input:
         vcf = rules.prep_source_vcf.output.vcf
     output:
-        vcf      = f"{LIFTOVER_DIR}/transanno/{SAMPLE}.hg38.vcf.gz",
-        tbi      = f"{LIFTOVER_DIR}/transanno/{SAMPLE}.hg38.vcf.gz.tbi",
+        vcf      = f"{LIFTOVER_DIR}/transanno/{SAMPLE}.hg38.raw.vcf.gz",
         rejected = f"{LIFTOVER_DIR}/transanno/{SAMPLE}.rejected.vcf"
     log:
         f"{LIFTOVER_DIR}/transanno/{SAMPLE}.log"
@@ -207,7 +199,7 @@ rule transanno_liftover:
         chain   = config["ref"]["transanno_chain"],
         srcfa   = config["ref"]["hg19_fasta"],
         dstfa   = config["ref"]["hg38_fasta"],
-        raw     = f"{LIFTOVER_DIR}/transanno/{SAMPLE}.hg38.raw.vcf",
+        raw     = f"{LIFTOVER_DIR}/transanno/{SAMPLE}.hg38.tmp.vcf",
         del_chr = _DEL_CHR
     shell:
         """
@@ -234,64 +226,58 @@ rule transanno_liftover:
             --output            {params.raw} \
             --fail              {output.rejected}
         bcftools sort -Oz -o {output.vcf} {params.raw}
-        tabix -f {output.vcf}
         rm -f {params.raw} $INPUT $INPUT.tbi
         """
 
-# ─── 7. Tag each VCF with LIFTOVER_TOOL INFO field ───────────────────────────
-def _tool_vcf(wildcards):
-    return f"{LIFTOVER_DIR}/{wildcards.tool}/{SAMPLE}.hg38.vcf.gz"
-
-rule tag_liftover_tool:
+# ─── 7. Normalize each tool's output the same way ───────────────────────────
+rule normalize_liftover:
     """
-    Annotate each per-tool hg38 VCF with LIFTOVER_TOOL=<tool> in INFO.
-    Matches on CHROM/POS/ID (ID = CHROM_POS_SVTYPE_END from hg19) rather than
-    CHROM/POS/REF/ALT, since SV REF/ALT sequences can be thousands of bases.
-    Number=. because the merge joins several tools into one value.
+    Put every tool's hg38 records into one canonical representation so the
+    merge compares coordinates, not allele spelling: bcftools pads REF/ALT,
+    transanno drops a shared padding base (POS+1). `bcftools norm`
+    left-aligns and trims; finalize_sv.py then checks REF against hg38, sets
+    END from the normalized record (chain-mapped for symbolic intervals),
+    and tags LIFTOVER_TOOL. Records failing those checks go to qc_rejected.
     """
     input:
-        vcf = _tool_vcf
+        raw    = f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.raw.vcf.gz",
+        source = rules.prep_source_vcf.output.vcf
     output:
-        vcf = f"{LIFTOVER_DIR}/tagged/{{tool}}.hg38.tagged.vcf.gz",
-        tbi = f"{LIFTOVER_DIR}/tagged/{{tool}}.hg38.tagged.vcf.gz.tbi"
+        vcf      = f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz",
+        tbi      = f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz.tbi",
+        rejected = f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.qc_rejected.vcf"
+    log:
+        f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.normalize.log"
     wildcard_constraints:
         tool = "|".join(TOOLS)
+    params:
+        fasta  = config["ref"]["hg38_fasta"],
+        chain  = lambda w: config["ref"]["transanno_chain" if w.tool == "transanno" else "liftover_chain"],
+        tmp    = f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.norm.tmp.vcf",
+        script = f"{SCRIPTS}/finalize_sv.py"
     shell:
         """
-        mkdir -p {LIFTOVER_DIR}/tagged
-        ANN={LIFTOVER_DIR}/tagged/{wildcards.tool}.ann.tsv.gz
-
-        bcftools query -f '%CHROM\t%POS\t%ID\t{wildcards.tool}\n' \
-            {input.vcf} \
-        | sort -k1,1V -k2,2n \
-        | bgzip > $ANN
-        tabix -f -s1 -b2 -e2 $ANN
-
-        HDR=$(mktemp)
-        echo '##INFO=<ID=LIFTOVER_TOOL,Number=.,Type=String,Description="Liftover tool(s) that produced this record">' > $HDR
-        bcftools annotate \
-            -a $ANN \
-            -c CHROM,POS,~ID,INFO/LIFTOVER_TOOL \
-            -h $HDR \
-            -Oz -o {output.vcf} \
-            {input.vcf}
-        rm -f $HDR $ANN $ANN.tbi
+        # -c w: warn on REF mismatch; finalize_sv.py rejects those records.
+        bcftools norm -f {params.fasta} -c w {input.raw} 2> {log} \
+        | python3 {params.script} --tool {wildcards.tool} --source {input.source} \
+            --chain {params.chain} --fasta {params.fasta} \
+            --output {params.tmp} --reject {output.rejected} 2>> {log}
+        bcftools sort -Oz -o {output.vcf} {params.tmp}
         tabix -f {output.vcf}
+        rm -f {params.tmp}
         """
 
-# ─── 8. Merge all tagged VCFs into one hg38 VCF ──────────────────────────────
+# ─── 8. Merge all normalized VCFs into one hg38 VCF ─────────────────────────
 rule merge_liftovers:
     """
     Concatenate per-tool hg38 VCFs, sort, then collapse records with identical
-    CHROM/POS/ID by joining their LIFTOVER_TOOL values.
-    Records where tools disagree on position (same hg19 ID, different hg38 POS)
-    are kept as separate lines — each carrying its own LIFTOVER_TOOL tag.
+    CHROM/POS/END/ID by joining their LIFTOVER_TOOL values. After
+    normalization a remaining POS or END difference is a real coordinate
+    disagreement and stays on its own line with its own LIFTOVER_TOOL tag.
     """
     input:
-        vcfs = expand(
-            f"{LIFTOVER_DIR}/tagged/{{tool}}.hg38.tagged.vcf.gz",
-            tool=TOOLS
-        )
+        vcfs = expand(f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz", tool=TOOLS),
+        tbis = expand(f"{LIFTOVER_DIR}/{{tool}}/{SAMPLE}.hg38.vcf.gz.tbi", tool=TOOLS)
     output:
         vcf = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz",
         tbi = f"{LIFTOVER_DIR}/merged/{SAMPLE}.merged.hg38.vcf.gz.tbi"
