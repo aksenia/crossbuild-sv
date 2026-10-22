@@ -17,6 +17,7 @@ sample_id so a cohort is just their concatenation:
 """
 import argparse
 import gzip
+import re
 import statistics
 from collections import defaultdict
 
@@ -70,7 +71,7 @@ def records(path):
                 keys, vals = p[8].split(':'), p[9].split(':')
                 gt = vals[keys.index('GT')] if 'GT' in keys and keys.index('GT') < len(vals) else NA
             yield {'chrom': p[0], 'pos': int(p[1]), 'id': p[2], 'ref': p[3], 'alt': p[4],
-                   'filter': p[6], 'info': parse_info(p[7]), 'gt': gt, 'last': p[-1]}
+                   'filter': p[6], 'info': parse_info(p[7]), 'info_str': p[7], 'gt': gt, 'last': p[-1]}
 
 
 def end_of(r):
@@ -120,10 +121,12 @@ def load_rejections(paths, qc_paths):
     rej = defaultdict(dict)
     for tool, path in paths.items():
         for r in records(path):
-            reason = (r['info'].get('FAILED_REASON')            # transanno
+            # transanno appends FAILED_REASON without a ';' separator
+            failed = re.search(r'FAILED_REASON=([^;]+)', r['info_str'])
+            reason = ((failed and failed.group(1))              # transanno
                       or (r['last'] if r['last'].startswith('Fail') else None)  # CrossMap .unmap
                       or r['filter'])                           # bcftools, Picard
-            rej[r['id']][tool] = str(reason)
+            rej[r['id']][tool] = str(reason).replace(',', '|')   # tools_rejected is comma-joined
     for tool, path in qc_paths.items():
         for r in records(path):
             rej[r['id']].setdefault(tool, 'qc:' + str(r['info'].get('QC_REJECT_REASON', NA)))
