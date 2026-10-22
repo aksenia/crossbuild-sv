@@ -120,3 +120,21 @@ Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`, and
 Caveats: an ID counts as exact/within-CI if any of its matched rows is; a
 stratum taken from the native call can differ from the source call's
 (e.g. size bin), so `lifted_ids` per stratum is not a partition of the source.
+
+## Cohort metrics: `liftover/aggregate.py`
+
+Pools the per-sample `metrics.tsv` files into one table of the same long
+shape, with `sample_id=cohort` (or `--cohort NAME`) and an extra
+`n_samples` column (samples that have that row). Not part of the Snakefile.
+
+```
+python3 liftover/aggregate.py --output cohort.metrics.tsv runs/*/comparison/*.metrics.tsv
+```
+
+- Counts are summed per (tool, set, stratum, metric).
+- Rates (`precision`, `recall`, `exact_rate`, `within_ci_rate`,
+  `gt_match_rate`, `yield`, `all_tools_agree_rate`) are recomputed from the
+  pooled counts with the formulas above, not averaged.
+- `median_abs_d_pos` / `median_abs_d_end` are the median of the per-sample
+  medians.
+- A `sample_id` seen in two input files is an error (it would double count).
