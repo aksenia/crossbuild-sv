@@ -101,7 +101,8 @@ Strata: `all`, `svtype=<T>`. Counted over source IDs.
 
 ### `set=main` / `set=refchanged`: agreement with native
 
-Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`.
+Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`, and
+`svtype` crossed with size bin (e.g. `svtype=DEL|size=1k-10k`).
 
 | metric | meaning |
 |---|---|

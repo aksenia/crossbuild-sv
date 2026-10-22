@@ -11,9 +11,10 @@ sample_id so a cohort is just their concatenation:
                  native_only call, or lifted_only placement. tool=union is the
                  merged set of all tools. Columns: see docs/comparison.md.
   metrics.tsv    long format (sample_id, tool, set, stratum, metric, value):
-                 counts and rates per stratum (all, svtype=, size=, region=,
-                 precision=). Counts are kept next to rates so a cohort can
-                 pool numerators/denominators instead of averaging rates.
+                 counts and rates per stratum (all, svtype=, size=,
+                 svtype=|size=, region=, precision=). Counts are kept next
+                 to rates so a cohort can pool numerators/denominators
+                 instead of averaging rates.
 """
 import argparse
 import gzip
@@ -362,6 +363,9 @@ def strata(row):
     for col, name in (('svtype', 'svtype'), ('size_bin', 'size'), ('precision', 'precision')):
         if row[col] != NA:
             yield f'{name}={row[col]}'
+    # crossed stratum: size bins mean different things per SV type
+    if row['svtype'] != NA and row['size_bin'] != NA:
+        yield f"svtype={row['svtype']}|size={row['size_bin']}"
     yield 'region=any' if row['in_region'] else 'region=none'
 
 
