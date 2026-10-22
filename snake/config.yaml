@@ -8,6 +8,10 @@ sample: HG002
 input_vcf: /data/GIAB_WGStest_100022508836_GRCh37.sv.vcf.gz
 results_dir: /results
 
+# Native hg38 calls for the same individual (same caller). Optional; when set,
+# lifted calls are compared against it (comparison/ outputs).
+native_vcf: /data/GIAB_WGStest_100022508836.sv.vcf.gz
+
 # Optional hg19 contig subset (source naming). Empty = whole genome.
 # Dev/test set: 14 (cross-chromosome lifts, rejections in every tool),
 # 21 (real POS disagreements between tools), Y (most symbolic DUPs).
@@ -36,6 +40,14 @@ liftover_tools:
   - transanno
 
 picard_java_opts: "-Xmx6g"
+
+# -----------------
+# Native comparison. SVDB only links native and lifted calls; all metrics
+# are computed from the coordinates afterwards (liftover/compare_native.py).
+# -----------------
+comparison:
+  svdb_overlap: 0.8          # min reciprocal overlap for DEL/DUP/INV
+  svdb_profile: sample       # same individual + caller: strict INS matching
 
 # -----------------
 # References

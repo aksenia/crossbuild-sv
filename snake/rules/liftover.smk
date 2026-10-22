@@ -19,6 +19,14 @@ _TARGETS     = f"-t {','.join(map(str, _CONTIGS))}" if _CONTIGS else ''
 _ADD_CHR = r'''awk -F'[=,>]' '/^##contig=<ID=/ && $3 !~ /^chr/ {print $3 "\t" ($3=="MT" ? "chrM" : "chr" $3)}' '''
 _DEL_CHR = r'''awk -F'[=,>]' '/^##contig=<ID=chr/ {c=substr($3,4); print $3 "\t" (c=="M" ? "MT" : c)}' '''
 
+# awk: stamp ID = CHROM_POS_SVTYPE_END from the record's own coordinates; a
+# repeated key gets _2, _3, ... in file order. Shared with native prep.
+# (Not `bcftools --set-id`: it parses %INFO/SVTYPE_ as a tag named SVTYPE_.)
+_STAMP_ID = r'''awk 'BEGIN{OFS="\t"} /^#/{print; next} {
+    n=split($8,a,";"); svtype=""; end_=$2;
+    for(i=1;i<=n;i++){ if(a[i]~/^SVTYPE=/) svtype=substr(a[i],8); if(a[i]~/^END=/) end_=substr(a[i],5) }
+    id=$1"_"$2"_"svtype"_"end_; $3=(++seen[id]>1) ? id"_"seen[id] : id; print }' '''
+
 # ─── 1. Filter to target SV types, optionally require PASS, stamp hg19 IDs ───
 rule prep_source_vcf:
     """
@@ -36,7 +44,8 @@ rule prep_source_vcf:
     params:
         pass_flag = _PASS_FLAG,
         sv_filter = _SV_FILTER,
-        targets   = _TARGETS
+        targets   = _TARGETS,
+        stamp_id  = _STAMP_ID
     shell:
         """
         mkdir -p {LIFTOVER_DIR}/source
@@ -44,15 +53,7 @@ rule prep_source_vcf:
             {params.pass_flag} {params.targets} \
             -i '{params.sv_filter}' \
             {input.vcf} \
-        | awk 'BEGIN{{OFS="\\t"}} /^#/{{print; next}} {{
-            split($8,a,";"); svtype=""; end_=$2;
-            for(i in a){{
-                if(a[i]~/^SVTYPE=/) svtype=substr(a[i],8);
-                if(a[i]~/^END=/) end_=substr(a[i],5)
-            }}
-            id=$1"_"$2"_"svtype"_"end_;
-            $3=(++seen[id]>1) ? id"_"seen[id] : id; print
-        }}' \
+        | {params.stamp_id} \
         | bcftools sort -Oz -o {output.vcf}
         tabix -f {output.vcf}
         """

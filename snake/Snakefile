@@ -11,11 +11,17 @@ SAMPLE  = config["sample"]
 RESULTS = config["results_dir"]
 SCRIPTS = "/app/liftover"
 
+COMPARE = bool(config.get("native_vcf"))
+
 rule all:
     input:
         f"{RESULTS}/annotated/source/{SAMPLE}.hg19.annotated.vcf.gz",
         f"{RESULTS}/annotated/merged/{SAMPLE}.merged.hg38.annotated.vcf.gz",
-        f"{RESULTS}/annotated/merged/{SAMPLE}.refchanged.hg38.annotated.vcf.gz"
+        f"{RESULTS}/annotated/merged/{SAMPLE}.refchanged.hg38.annotated.vcf.gz",
+        *([f"{RESULTS}/comparison/{SAMPLE}.links.tsv.gz",
+           f"{RESULTS}/comparison/{SAMPLE}.metrics.tsv"] if COMPARE else [])
 
 include: "rules/liftover.smk"
 include: "rules/annotations.smk"
+if COMPARE:
+    include: "rules/comparison.smk"
