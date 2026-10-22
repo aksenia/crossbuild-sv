@@ -1,0 +1,7 @@
+.git/
+.claude/
+docs/
+results/
+*.sif
+**/__pycache__/
+**/.snakemake/

@@ -1,78 +1,58 @@
-FROM python:3.11-slim
+# Build context is the repo root:  docker build -t crossbuild-sv:latest .
 
+# Transanno from its tagged source (no prebuilt binary for every arch).
+FROM rust:1.97-slim AS transanno-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates pkg-config zlib1g-dev libbz2-dev liblzma-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch v0.4.5 https://github.com/informationsea/transanno.git /src/transanno \
+    && cd /src/transanno && cargo build --release --locked
+
+FROM python:3.11-slim
 WORKDIR /app
+ARG BCFTOOLS_VERSION=1.22
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
-    tar \
-    bzip2 \
-    unzip \
-    make \
-    gcc \
-    g++ \
-    default-jre-headless \
-    tabix \
-    zlib1g-dev \
-    libbz2-dev \
-    liblzma-dev \
-    libcurl4-openssl-dev \
-    && apt-get install -y --only-upgrade liblcms2-2 \
+        ca-certificates wget bzip2 make gcc g++ git default-jre-headless tabix \
+        zlib1g-dev libbz2-dev liblzma-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Python liftover tools
-RUN pip install --no-cache-dir CrossMap pysam snakemake && \
-    pip install --no-cache-dir --upgrade setuptools
+# Versions are pinned: an unpinned CrossMap once rejected most sequence-resolved
+# DELs as Fail(REF==ALT). setuptools<81 keeps pkg_resources for CrossMap;
+# svdb and truvari build with Cython/numpy without build isolation.
+RUN python -m pip install --no-cache-dir --upgrade pip "setuptools==80.10.2" wheel Cython numpy \
+    && python -m pip install --no-cache-dir --no-build-isolation \
+        CrossMap==0.7.3 pysam snakemake==8.30.0 svdb==2.12.0 truvari==5.3.0
 
-# bcftools with liftover plugin
-RUN wget https://github.com/samtools/bcftools/releases/download/1.22/bcftools-1.22.tar.bz2 && \
-    tar xjf bcftools-1.22.tar.bz2 && \
-    cd bcftools-1.22 && \
-    /bin/rm -f plugins/*.{c,h,mk} && \
-    wget -P plugins https://raw.githubusercontent.com/freeseek/score/master/liftover.c && \
-    /bin/rm -f plugins/pgs.mk || true && \
-    ./configure --prefix=/usr/local && \
-    make -j$(nproc) && \
-    make plugins/liftover.so && \
-    mkdir -p /usr/local/bin /usr/local/lib/bcftools_plugins && \
-    cp bcftools /usr/local/bin/ && \
-    cp plugins/liftover.so /usr/local/lib/bcftools_plugins/ && \
-    cd .. && rm -rf bcftools-1.22 bcftools-1.22.tar.bz2
-
+# bcftools with the freeseek liftover plugin
+RUN wget -q "https://github.com/samtools/bcftools/releases/download/${BCFTOOLS_VERSION}/bcftools-${BCFTOOLS_VERSION}.tar.bz2" \
+        -O /tmp/bcftools.tar.bz2 \
+    && tar xjf /tmp/bcftools.tar.bz2 -C /tmp && cd "/tmp/bcftools-${BCFTOOLS_VERSION}" \
+    && wget -q https://raw.githubusercontent.com/freeseek/score/master/liftover.c -O plugins/liftover.c \
+    && ./configure --prefix=/usr/local && make -j"$(nproc)" && make plugins/liftover.so \
+    && install -m 755 bcftools /usr/local/bin/bcftools \
+    && install -D -m 755 plugins/liftover.so /usr/local/lib/bcftools_plugins/liftover.so \
+    && rm -rf "/tmp/bcftools-${BCFTOOLS_VERSION}" /tmp/bcftools.tar.bz2
 ENV BCFTOOLS_PLUGINS=/usr/local/lib/bcftools_plugins
 
 # Picard 3.4.0
-RUN mkdir -p /usr/local/lib \
-    && wget -q https://github.com/broadinstitute/picard/releases/download/3.4.0/picard.jar \
-       -O /usr/local/lib/picard.jar \
-    && printf '#!/bin/sh\nexec java -jar /usr/local/lib/picard.jar "$@"\n' \
-       > /usr/local/bin/picard \
+RUN wget -q https://github.com/broadinstitute/picard/releases/download/3.4.0/picard.jar \
+        -O /usr/local/lib/picard.jar \
+    && printf '#!/bin/sh\nexec java $JAVA_OPTS -jar /usr/local/lib/picard.jar "$@"\n' > /usr/local/bin/picard \
     && chmod +x /usr/local/bin/picard
 
-# Transanno (statically linked, arch-aware)
-RUN ARCH=$(uname -m) \
-    && wget -q "https://github.com/informationsea/transanno/releases/download/v0.4.5/transanno-${ARCH}-unknown-linux-musl-v0.4.5.zip" \
-       -O /tmp/transanno.zip \
-    && unzip /tmp/transanno.zip -d /tmp/transanno \
-    && install -m 755 "/tmp/transanno/transanno-${ARCH}-unknown-linux-musl-v0.4.5/transanno" /usr/local/bin/transanno \
-    && rm -rf /tmp/transanno /tmp/transanno.zip
+COPY --from=transanno-builder /src/transanno/target/release/transanno /usr/local/bin/transanno
 
-# Build context must be the repo root:
-#   docker build -f sv-preprocess/Dockerfile -t crossbuild-sv:latest .
-COPY sv-preprocess/liftover/ ./liftover/
-COPY sv-preprocess/snake/ ./snake/
-COPY preprocess/regions/ ./regions/
+COPY liftover/ ./liftover/
+COPY snake/ ./snake/
+COPY regions/ ./regions/
 
-RUN chmod +x ./liftover/*.py
-
-RUN groupadd -r crossbuild && useradd -r -g crossbuild crossbuild && \
-    mkdir -p /home/crossbuild && \
-    chown -R crossbuild:crossbuild /app /home/crossbuild
-
+RUN groupadd -r crossbuild && useradd -r -g crossbuild -d /home/crossbuild crossbuild \
+    && mkdir -p /home/crossbuild && chown -R crossbuild:crossbuild /app /home/crossbuild
 USER crossbuild
-
 ENV HOME=/home/crossbuild
-ENV PATH="/usr/local/bin:${PATH}"
 
-RUN which CrossMap bcftools picard transanno && echo "All four liftover tools verified"
+RUN which CrossMap bcftools picard transanno svdb truvari tabix \
+    && bcftools plugin -l | grep -qx liftover
 
-CMD ["python", "--help"]
+CMD ["snakemake", "--help"]

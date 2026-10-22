@@ -1,11 +1,15 @@
 import os
 
-configfile: "config.yaml"
+# No default configfile: always pass --configfile, so a template value can
+# never silently leak into a real run.
+if not config:
+    raise ValueError("pass a config with --configfile (see snake/config.yaml)")
 
 container: config.get("container_image", "docker://crossbuild-sv:latest")
 
 SAMPLE  = config["sample"]
 RESULTS = config["results_dir"]
+SCRIPTS = "/app/liftover"
 
 rule all:
     input:

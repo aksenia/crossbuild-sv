@@ -20,7 +20,7 @@ ANNOT_DIR    = os.path.join(config["results_dir"], "annotated")
 
 
 rule annotate_regions_hg19:
-    """Tag source hg19 VCF with CUPs, DISCREPs, and CENTEL flags."""
+    """Tag source hg19 VCF with CUPs, DISCREPs, CENTEL, and SEGDUP flags."""
     input:
         vcf = f"{LIFTOVER_DIR}/source/{SAMPLE}.hg19.vcf.gz",
         tbi = f"{LIFTOVER_DIR}/source/{SAMPLE}.hg19.vcf.gz.tbi",
@@ -67,7 +67,7 @@ rule annotate_regions_hg19:
             -m +SEGDUP \
             -Oz -o {output.vcf}
 
-        tabix {output.vcf}
+        tabix -f {output.vcf}
         rm -rf $TMP
         """
 
@@ -90,6 +90,8 @@ rule annotate_regions_hg38:
         """
         mkdir -p $(dirname {output.vcf})
         TMP=$(mktemp -d)
+        # Declare only the two flags applied on hg38 (header.txt holds all four).
+        grep -E 'ID=(CUPs|DISCREPs),' {params.header} > $TMP/hg38_header.txt
 
         bcftools view --no-version -h {input.vcf} | grep -v '/ess/' > $TMP/clean_header.txt
         bcftools reheader -h $TMP/clean_header.txt {input.vcf} \
@@ -98,7 +100,7 @@ rule annotate_regions_hg38:
             -a {params.cups} \
             -c CHROM,FROM,TO \
             -m +CUPs \
-            -h {params.header} \
+            -h $TMP/hg38_header.txt \
         | bcftools annotate \
             --no-version \
             -a {params.discreps} \
@@ -106,6 +108,6 @@ rule annotate_regions_hg38:
             -m +DISCREPs \
             -Oz -o {output.vcf}
 
-        tabix {output.vcf}
+        tabix -f {output.vcf}
         rm -rf $TMP
         """
