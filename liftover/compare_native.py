@@ -278,7 +278,7 @@ class Builder:
                 rows += [self.row(tool, set_, 'lifted_only', None, l) for l in m['lifted']]
             elif set_ == 'main':   # REF-changed set: native-only is not defined
                 rows += [self.row(tool, set_, 'native_only', n[0], None) for n in m['native']]
-        return self.count_links(rows)
+        return self.one_to_one(rows)
 
     def union(self, rows):
         """
@@ -303,7 +303,42 @@ class Builder:
                 if key not in seen:
                     seen.add(key)
                     out.append(dict(r, tool='union'))
-        return self.count_links(out)
+        return self.one_to_one(out)
+
+    def one_to_one(self, rows):
+        """
+        Keep one source ID per native call. SVDB's greedy clustering can put
+        several lifted calls into one native cluster (seen: near-duplicate
+        source calls a few bp apart); the closest stays matched, the others
+        become lifted_only unless matched to another native call. n_links
+        keeps the count before this step, so n_links > 1 marks such clusters.
+        """
+        self.count_links(rows)
+        by_native = defaultdict(list)
+        for r in rows:
+            if r['match_class'] == 'matched':
+                by_native[r['native_id']].append(r)
+        demoted = set()
+        for rs in by_native.values():
+            if len({r['source_id'] for r in rs}) > 1:
+                best = min(rs, key=self.link_distance)['source_id']
+                demoted |= {id(r) for r in rs if r['source_id'] != best}
+        kept = [r for r in rows if id(r) not in demoted]
+        still_matched = {r['source_id'] for r in kept if r['match_class'] == 'matched'}
+        seen = set()
+        for r in rows:
+            key = (r['source_id'], r['lift_chrom'], r['lift_pos'])
+            if id(r) in demoted and r['source_id'] not in still_matched and key not in seen:
+                seen.add(key)
+                kept.append(self.row(r['tool'], r['set'], 'lifted_only', None, key))
+        return kept
+
+    @staticmethod
+    def link_distance(r):
+        """Sort key: same chrom first, then |d_pos| + |d_end|; source_id breaks ties."""
+        if r['d_pos'] == NA:
+            return (1, 0, r['source_id'])
+        return (0, abs(r['d_pos']) + abs(r['d_end']), r['source_id'])
 
     @staticmethod
     def count_links(rows):
