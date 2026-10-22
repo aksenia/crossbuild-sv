@@ -161,6 +161,12 @@ class ChainIndex:
                     s += int(fields[1])
                     t += int(fields[2])
 
+    def lift_point(self, chrom, pos):
+        """(target chrom, pos) through the best-scoring chain covering pos, or None."""
+        hits = [(c.score, c.target_name, t) for c in self.by_source.get(bare_contig(chrom), [])
+                if (t := c.map_point(pos))]
+        return max(hits)[1:] if hits else None
+
     def target_end(self, src, target_chrom, target_pos):
         """
         END for a symbolic interval, if one chain maps it onto the tool's POS

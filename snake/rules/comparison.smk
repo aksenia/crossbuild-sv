@@ -116,12 +116,16 @@ rule compare_native:
         rejected  = list(_REJECTED.values()),
         annotated = expand(f"{RESULTS_DIR}/annotated/merged/{SAMPLE}.{{part}}.hg38.annotated.vcf.gz",
                            part=["merged", "refchanged"]),
-        ids       = rules.refchanged_ids.output.ids
+        ids       = rules.refchanged_ids.output.ids,
+        # unfiltered inputs: what the other build has near an unmatched call
+        raw_source = config["input_vcf"],
+        raw_native = config["native_vcf"]
     output:
         links   = f"{COMP_DIR}/{SAMPLE}.links.tsv.gz",
         metrics = f"{COMP_DIR}/{SAMPLE}.metrics.tsv"
     params:
         script    = f"{SCRIPTS}/compare_native.py",
+        chain     = config["ref"]["liftover_chain"],
         tools     = ",".join(TOOLS),
         tool_vcfs = " ".join(f"{t}={LIFTOVER_DIR}/{t}/{SAMPLE}.hg38.vcf.gz" for t in TOOLS),
         qc        = " ".join(f"{t}={LIFTOVER_DIR}/{t}/{SAMPLE}.qc_rejected.vcf" for t in TOOLS),
@@ -133,5 +137,6 @@ rule compare_native:
             --source {input.source} --native {input.native} \\
             --tool-vcf {params.tool_vcfs} --rejected {params.rejected} --qc-rejected {params.qc} \\
             --lifted-annotated {input.annotated} --refchanged-ids {input.ids} \\
-            --svdb {params.svdb} --links {output.links} --metrics {output.metrics}
+            --svdb {params.svdb} --raw-source {input.raw_source} --raw-native {input.raw_native} \\
+            --chain {params.chain} --links {output.links} --metrics {output.metrics}
         """

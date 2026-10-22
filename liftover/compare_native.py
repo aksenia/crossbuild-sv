@@ -17,10 +17,13 @@ sample_id so a cohort is just their concatenation:
                  instead of averaging rates.
 """
 import argparse
+import bisect
 import gzip
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
+
+from finalize_sv import ChainIndex, bare_contig   # sibling script
 
 SRC_FLAGS = ('CUPs', 'DISCREPs', 'CENTEL', 'SEGDUP')
 HG38_FLAGS = ('CUPs', 'DISCREPs')
@@ -29,6 +32,12 @@ SETS = ('main', 'refchanged')
 SIZE_BINS = [(50, '<50'), (100, '50-100'), (500, '100-500'), (1000, '500-1k'),
              (10000, '1k-10k'), (float('inf'), '>=10k')]
 NA = '.'
+# Unmatched calls: what the other build has within NEAR_WINDOW bp, first
+# matching reason wins (see OtherBuild.explain).
+NEAR_WINDOW = 1000
+REASONS = ('near_same_type', 'filtered_other_build', 'other_type_other_build',
+           'no_hg19_sequence', 'none')
+OFFSET_BINS = [(0, '0'), (10, '1-10'), (100, '11-100'), (1000, '101-1k'), (float('inf'), '>1k')]
 
 COLUMNS = [
     'sample_id', 'tool', 'set', 'match_class', 'native_id', 'source_id', 'n_links',
@@ -40,6 +49,7 @@ COLUMNS = [
     'n_tools_lifted', 'n_placements', 'tools_rejected', *(f'lift_{f}' for f in HG38_FLAGS),
     'exact', 'd_pos', 'd_end', 'd_svlen', 'recip_overlap', 'within_ci',
     'chrom_match', 'svtype_match', 'gt_match', 'closest_tool',
+    'diff_reason', 'nearest_dist', 'nearest_size_ratio',
     'svtype', 'size_bin', 'in_region', 'precision',
 ]
 
@@ -163,6 +173,88 @@ def svdb_clusters(path):
         yield members
 
 
+def offset_bin(d):
+    return next(label for limit, label in OFFSET_BINS if d <= limit)
+
+
+# ── Other build: why is a call unmatched? ────────────────────────────────────
+class OtherBuild:
+    """
+    Raw calls of the other build (any FILTER, any SVTYPE incl. BND), on hg38
+    coordinates. A call missing from the comparison may still be there as a
+    filtered call, a BND, or a nearby call SVDB did not link.
+    """
+
+    def __init__(self, calls):
+        """calls: iterable of (chrom, pos, filter, svtype, svlen)."""
+        self.calls = defaultdict(list)
+        for chrom, *rest in calls:
+            self.calls[bare_contig(chrom)].append(tuple(rest))
+        for v in self.calls.values():
+            v.sort()
+        self.starts = {c: [x[0] for x in v] for c, v in self.calls.items()}
+
+    def near(self, chrom, pos):
+        c = bare_contig(chrom)
+        starts = self.starts.get(c, [])
+        return self.calls[c][bisect.bisect_left(starts, pos - NEAR_WINDOW):
+                             bisect.bisect_right(starts, pos + NEAR_WINDOW)] if starts else []
+
+    def explain(self, chrom, pos, svtype, svlen):
+        """(reason, nearest_dist, nearest_size_ratio); the last two only for near_same_type."""
+        hits = self.near(chrom, pos)
+        same = [h for h in hits if h[2] == svtype and h[1] in ('PASS', '.')]
+        if same:
+            p, _, _, n = min(same, key=lambda h: abs(h[0] - pos))
+            ratio = round(min(svlen, n) / max(svlen, n), 3) if svlen and n else NA
+            return 'near_same_type', abs(p - pos), ratio
+        if any(h[2] == svtype for h in hits):
+            return 'filtered_other_build', NA, NA
+        if hits:
+            return 'other_type_other_build', NA, NA
+        return 'none', NA, NA
+
+
+def raw_calls(path, chains=None):
+    """(chrom, pos, filter, svtype, svlen) per record; hg19 records lifted by POS through chains."""
+    for r in records(path):
+        chrom, pos = r['chrom'], r['pos']
+        if chains:
+            hit = chains.lift_point(chrom, pos)
+            if not hit:
+                continue
+            chrom, pos = hit
+        yield chrom, pos, r['filter'], r['info'].get('SVTYPE', NA), svlen_of(r)
+
+
+class Hg19Coverage:
+    """hg38 positions some chain block maps from hg19 (else the locus has no hg19 sequence)."""
+
+    def __init__(self, chains):
+        spans = defaultdict(list)
+        for cs in chains.by_source.values():
+            for c in cs:
+                for b in c.blocks:
+                    n = b.source_end - b.source_start
+                    s = b.target_start if c.target_strand == '+' else c.target_size - b.target_start - n
+                    spans[bare_contig(c.target_name)].append((s + 1, s + n))
+        self.spans = {}
+        for chrom, v in spans.items():
+            merged = []
+            for s, e in sorted(v):
+                if merged and s <= merged[-1][1] + 1:
+                    merged[-1][1] = max(merged[-1][1], e)
+                else:
+                    merged.append([s, e])
+            self.spans[chrom] = ([s for s, _ in merged], [e for _, e in merged])
+
+    def __contains__(self, chrom_pos):
+        chrom, pos = chrom_pos
+        starts, ends = self.spans.get(bare_contig(chrom), ([], []))
+        i = bisect.bisect_right(starts, pos) - 1
+        return i >= 0 and pos <= ends[i]
+
+
 # ── Rows ─────────────────────────────────────────────────────────────────────
 def size_bin(n):
     return next(label for limit, label in SIZE_BINS if n < limit)
@@ -187,6 +279,10 @@ class Builder:
         for path in a.lifted_annotated:
             for r in records(path):
                 self.lift_flags[(r['id'], r['chrom'], r['pos'], end_of(r))] = flags(r, HG38_FLAGS)
+        chains = ChainIndex(a.chain)
+        self.hg19 = OtherBuild(raw_calls(a.raw_source, chains))
+        self.hg38 = OtherBuild(raw_calls(a.raw_native))
+        self.hg19_coverage = Hg19Coverage(chains)
 
     def placement(self, sid, chrom, pos, tool):
         """The placement SVDB saw; prefer this tool's own if several share CHROM/POS."""
@@ -268,6 +364,16 @@ class Builder:
             row['size_bin'] = size_bin(svlen_of(ref))
             row['precision'] = 'imprecise' if 'IMPRECISE' in ref['info'] else 'precise'
         row['in_region'] = int(any(regions))
+
+        if cls == 'native_only':
+            why = self.hg19.explain(nat['chrom'], nat['pos'], row['nat_svtype'], row['nat_svlen'])
+            if why[0] == 'none' and (nat['chrom'], nat['pos']) not in self.hg19_coverage:
+                why = ('no_hg19_sequence', NA, NA)
+        elif cls == 'lifted_only':
+            svlen = row['lift_svlen'] if row['lift_svlen'] != NA else row['src_svlen']
+            why = self.hg38.explain(row['lift_chrom'], row['lift_pos'], row['src_svtype'], svlen)
+        if cls != 'matched':
+            row.update(zip(('diff_reason', 'nearest_dist', 'nearest_size_ratio'), why))
         return row
 
     def links(self, tool, set_, path):
@@ -369,6 +475,39 @@ def strata(row):
     yield 'region=any' if row['in_region'] else 'region=none'
 
 
+def offset_metrics(rs, matched):
+    """
+    Matched IDs by their smallest max(|d_pos|, |d_end|); unmatched calls by
+    diff_reason (first in REASONS order if an ID has several rows), and
+    near_same_type ones by distance to the nearest same-type call. Large
+    offsets mostly show up there: SVDB links only close calls.
+    """
+    m = {}
+    best = {}
+    for r in matched:   # other chrom ranks after any offset
+        off = float('inf') if r['d_pos'] == NA else max(abs(r['d_pos']), abs(r['d_end']))
+        best[r['source_id']] = min(best.get(r['source_id'], off), off)
+    counts = Counter('other_chrom' if o == float('inf') else offset_bin(o) for o in best.values())
+    for label in [label for _, label in OFFSET_BINS] + ['other_chrom']:
+        m[f'matched_offset_{label}'] = counts[label]
+
+    for cls, key in (('native_only', 'native_id'), ('lifted_only', 'source_id')):
+        linked = {r[key] for r in matched}
+        per_id = {}
+        for r in rs:
+            if r['match_class'] == cls and r[key] not in linked:
+                why = (REASONS.index(r['diff_reason']), r['nearest_dist'] if r['nearest_dist'] != NA else 0)
+                per_id[r[key]] = min(per_id.get(r[key], why), why)
+        reasons = Counter(REASONS[i] for i, _ in per_id.values())
+        for reason in REASONS:
+            if cls == 'native_only' or reason != 'no_hg19_sequence':
+                m[f'{cls}_{reason}'] = reasons[reason]
+        near = Counter(offset_bin(d) for i, d in per_id.values() if REASONS[i] == 'near_same_type')
+        for _, label in OFFSET_BINS[:-1]:   # nothing beyond NEAR_WINDOW
+            m[f'{cls}_near_offset_{label}'] = near[label]
+    return m
+
+
 def comparison_metrics(rows):
     groups = defaultdict(list)
     for r in rows:
@@ -397,6 +536,8 @@ def comparison_metrics(rows):
         m['exact_rate'] = rate(m['exact_ids'], m['matched_ids'])
         m['within_ci_rate'] = rate(m['within_ci_ids'], m['matched_ids'])
         m['gt_match_rate'] = rate(m['gt_match_ids'], m['matched_ids'])
+        m.update({k: v for k, v in offset_metrics(rs, matched).items()
+                  if set_ == 'main' or not k.startswith('native_only')})
         for d in ('d_pos', 'd_end'):
             vals = [abs(r[d]) for r in matched if r[d] != NA]
             m[f'median_abs_{d}'] = statistics.median(vals) if vals else NA
@@ -447,6 +588,9 @@ def main():
     p.add_argument('--lifted-annotated', nargs='+', required=True, help='annotated merged hg38 VCFs')
     p.add_argument('--refchanged-ids', required=True)
     p.add_argument('--svdb', nargs='+', required=True, metavar='TOOL:SET=VCF')
+    p.add_argument('--raw-source', required=True, help='unfiltered hg19 input VCF (diff_reason)')
+    p.add_argument('--raw-native', required=True, help='unfiltered native hg38 VCF (diff_reason)')
+    p.add_argument('--chain', required=True, help='hg19->hg38 UCSC chain (diff_reason)')
     p.add_argument('--links', required=True)
     p.add_argument('--metrics', required=True)
     a = p.parse_args()

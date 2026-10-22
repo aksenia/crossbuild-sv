@@ -24,7 +24,7 @@ native call, not the other way round.
    normalized VCFs and writes the two tables below. Links are 1:1: if SVDB puts
    several lifted calls in one native cluster, the closest (same chrom, then
    smallest `|d_pos|+|d_end|`) stays `matched` and the others become
-   `lifted_only`.
+   `lifted_only`. Every unmatched call also gets a `diff_reason` (below).
 
 `tool=union` is not a separate SVDB run; it is derived from the per-tool
 links (one SVDB run over the merged set would let a native call join only one
@@ -33,6 +33,23 @@ of a source ID's several placements):
 - every distinct matched (native, source, placement) from any tool;
 - `lifted_only` placements of source IDs that no tool matched;
 - `native_only` calls that no tool matched.
+
+### Why a call is unmatched: `diff_reason`
+
+Source and native are two runs of the same caller on the same reads, so an
+unmatched call is usually explained by what the other build has nearby.
+compare_native looks at the **unfiltered** other-build VCF (config
+`input_vcf` / `native_vcf`: any FILTER, any SVTYPE, BND included) within
+1 kb of the call; hg19 records are placed on hg38 by lifting their POS
+through the UCSC chain. The first reason that applies wins:
+
+| `diff_reason` | meaning |
+|---|---|
+| `near_same_type` | a PASS call of the same SVTYPE is there, but SVDB did not link it (offset, size, or for INS a different inserted sequence) |
+| `filtered_other_build` | a same-SVTYPE call is there, but not PASS |
+| `other_type_other_build` | only calls of another SVTYPE (often BND) |
+| `no_hg19_sequence` | native-only: nothing nearby, and no chain block covers the locus |
+| `none` | nothing within 1 kb |
 
 Both files carry `sample_id` in every row, so a cohort is their
 concatenation (e.g. DuckDB
@@ -70,6 +87,9 @@ One row per (tool, set, link). `.` = not applicable / missing.
 | `within_ci` | `d_pos` within native CIPOS and `d_end` within CIEND (for precise calls this equals `exact`) |
 | `chrom_match`, `svtype_match` | lifted chrom = native chrom; source SVTYPE = native SVTYPE |
 | `gt_match` | unphased, allele-sorted source GT = native GT |
+| `diff_reason` | unmatched rows only, see above |
+| `nearest_dist` | `near_same_type` only: bp from POS to the nearest same-SVTYPE PASS call of the other build |
+| `nearest_size_ratio` | `near_same_type` only: smaller / larger event size of the two |
 | `closest_tool` | tool(s) whose placement of this source ID is closest to the native call (`|d_pos|+|d_end|`, all tools, ties comma-joined) |
 | `svtype`, `size_bin`, `precision` | strata, taken from the native call when present (it is the reference), else from the source call. Size bins: `<50`, `50-100`, `100-500`, `500-1k`, `1k-10k`, `>=10k` |
 | `in_region` | 1 if any native, source or lifted region flag is set |
@@ -116,6 +136,16 @@ Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`, and
 | `within_ci_ids`, `within_ci_rate` | matched IDs with `within_ci=1`; / `matched_ids` |
 | `gt_match_ids`, `gt_match_rate` | matched IDs with `gt_match=1`; / `matched_ids` |
 | `median_abs_d_pos`, `median_abs_d_end` | over matched rows on the same chrom |
+| `matched_offset_<bin>` | matched IDs by their smallest `max(|d_pos|, |d_end|)`; bins `0`, `1-10`, `11-100`, `101-1k`, `>1k`, `other_chrom`. Sums to `matched_ids` |
+| `native_only_<reason>` | native-only calls by `diff_reason` (main only). Sums to `native_only` |
+| `lifted_only_<reason>` | lifted-only IDs by `diff_reason` (first in table order if placements differ). Sums to `lifted_only_ids` |
+| `native_only_near_offset_<bin>`, `lifted_only_near_offset_<bin>` | `near_same_type` calls by `nearest_dist`, bins `0` to `101-1k` |
+
+Large offsets: SVDB links only close, similar calls (DEL/DUP: 0.8 overlap;
+INS: within 25 bp, SVLEN ratio 0.9, similar sequence with the `sample`
+profile), so a shifted call is usually unmatched with `near_same_type`, not
+matched with a large offset. Read
+`matched_offset_*` and `*_near_offset_*` together.
 
 Caveats: an ID counts as exact/within-CI if any of its matched rows is; a
 stratum taken from the native call can differ from the source call's

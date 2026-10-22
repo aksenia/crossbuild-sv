@@ -4,7 +4,8 @@ bcftools + picard). Records: sequence DEL and INS, symbolic DUP (Picard
 rejects it), a REF-changed ID, a native-only call, a 1:N SVDB cluster (one
 native INS + two near-duplicate source INS). Hand-made: Picard's record of
 14_19259092_DEL_19259140 moved to its qc_rejected file (dev data has no QC
-rejections).
+rejections). The chain is built here: one 2 kb block around each lifted
+record, so hg38 loci away from them have no hg19 sequence.
 """
 import csv
 import gzip
@@ -21,9 +22,20 @@ DATA = os.path.join(ROOT, 'tests', 'data', 'compare')
 TOOLS = ('bcftools', 'picard')
 
 
+def write_chain(path):
+    src = {r['id']: r for r in cn.records(os.path.join(DATA, 'source.vcf'))}
+    with open(path, 'w') as fh:
+        for i, r in enumerate(cn.records(os.path.join(DATA, 'bcftools.vcf'))):
+            s, t = src[r['id']]['pos'] - 1001, r['pos'] - 1001
+            fh.write(f"chain 1 chr{src[r['id']]['chrom']} 300000000 + {s} {s + 2000} "
+                     f"{r['chrom']} 300000000 + {t} {t + 2000} {i}\n2000\n\n")
+
+
 def run_compare(out_dir, sample='S'):
     """Run compare_native.py on the fixture; return (links, metrics) paths."""
     f = lambda name: os.path.join(DATA, name)
+    chain = os.path.join(out_dir, 'fixture.chain')
+    write_chain(chain)
     links, metrics = os.path.join(out_dir, 'links.tsv.gz'), os.path.join(out_dir, 'metrics.tsv')
     subprocess.run([
         sys.executable, os.path.join(ROOT, 'liftover', 'compare_native.py'),
@@ -35,6 +47,7 @@ def run_compare(out_dir, sample='S'):
         '--lifted-annotated', f('lifted.merged.vcf'), f('lifted.refchanged.vcf'),
         '--refchanged-ids', f('refchanged_ids.tsv'),
         '--svdb', *(f'{t}:{s}={f(f"svdb.{t}.{s}.vcf")}' for t in TOOLS for s in cn.SETS),
+        '--raw-source', f('source.vcf'), '--raw-native', f('native.vcf'), '--chain', chain,
         '--links', links, '--metrics', metrics], check=True, capture_output=True)
     return links, metrics
 
@@ -89,6 +102,27 @@ class CompareNativeTest(unittest.TestCase):
         # the REF-changed ID has a different END per tool: two placements
         self.assertEqual(len(self.rows('union', 'refchanged')), 2)
 
+    def test_diff_reason(self):
+        why = lambda r: (r['diff_reason'], r['nearest_dist'])
+        # demoted 1:N partner: the same native INS is right there
+        self.assertEqual(why(self.rows('bcftools', source_id='21_46338850_INS_46338850')[0]),
+                         ('near_same_type', '0'))
+        self.assertEqual(why(self.rows('bcftools', source_id='14_19259092_DEL_19259140')[0]), ('none', '.'))
+        # Picard rejected the DUP; the hg19 call lifts 1 bp from the native one
+        self.assertEqual(why(self.rows('picard', native_id='chrY_20136373_DUP_20141502')[0]),
+                         ('near_same_type', '1'))
+        self.assertEqual(why(self.rows('union', native_id='chr14_20236451_INS_20236451')[0]),
+                         ('no_hg19_sequence', '.'))
+        self.assertTrue(all(r['diff_reason'] == '.' for r in self.links if r['match_class'] == 'matched'))
+
+    def test_other_build(self):
+        ob = cn.OtherBuild([('chr1', 1000, 'PASS', 'BND', 0), ('chr1', 1500, 'MinQUAL', 'DEL', 100),
+                            ('chr1', 5000, 'PASS', 'DEL', 80)])
+        self.assertEqual(ob.explain('chr1', 1200, 'DEL', 100), ('filtered_other_build', '.', '.'))
+        self.assertEqual(ob.explain('chr1', 1200, 'INS', 100), ('other_type_other_build', '.', '.'))
+        self.assertEqual(ob.explain('chr1', 4500, 'DEL', 100), ('near_same_type', 500, 0.8))
+        self.assertEqual(ob.explain('chr2', 1000, 'DEL', 100), ('none', '.', '.'))
+
     def test_metrics(self):
         m = self.metrics
         expect = {
@@ -105,9 +139,17 @@ class CompareNativeTest(unittest.TestCase):
             ('union', 'all', 'all', 'all_tools_agree_ids'): '4',
             ('union', 'main', 'all', 'recall'): '0.8',
             ('bcftools', 'main', 'svtype=DEL|size=50-100', 'matched_ids'): '1',
+            ('bcftools', 'main', 'all', 'matched_offset_0'): '3',
+            ('bcftools', 'main', 'all', 'matched_offset_1-10'): '1',
+            ('bcftools', 'main', 'all', 'lifted_only_near_same_type'): '1',
+            ('bcftools', 'main', 'all', 'lifted_only_none'): '1',
+            ('bcftools', 'main', 'all', 'native_only_no_hg19_sequence'): '1',
+            ('picard', 'main', 'all', 'native_only_near_same_type'): '1',
+            ('picard', 'main', 'all', 'native_only_near_offset_1-10'): '1',
         }
         self.assertEqual({k: m.get(k) for k in expect}, expect)
         self.assertNotIn(('bcftools', 'refchanged', 'all', 'recall'), m)
+        self.assertNotIn(('bcftools', 'refchanged', 'all', 'native_only_none'), m)
 
 
 if __name__ == '__main__':
