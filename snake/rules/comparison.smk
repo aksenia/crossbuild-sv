@@ -1,4 +1,5 @@
 import os
+import shlex
 
 # ─── Compare lifted calls with native hg38 calls of the same individual ──────
 # Native goes through the same filter, ID stamp and normalization as the
@@ -15,6 +16,21 @@ _NATIVE_TARGETS = ("-t " + ",".join(c if c.startswith("chr") else ("chrM" if c =
 
 _REJECTED = {t: (f"{LIFTOVER_DIR}/{t}/{SAMPLE}.hg38.unmap.vcf" if t == "crossmap"
                  else f"{LIFTOVER_DIR}/{t}/{SAMPLE}.rejected.vcf") for t in TOOLS}
+
+
+# Build optional arguments from the declared dependencies and report output.
+# Quote each argument so resource paths containing spaces remain one argument.
+def _context_arguments(wildcards, input, output):
+    if not CONTEXT:
+        return ""
+    arguments = [
+        "--context-bed", str(input.context_bed),
+        "--context-flags", str(input.context_flags),
+        "--context-report", str(output.context_report),
+    ]
+    if CONTEXT_SIZES:
+        arguments += ["--context-sizes", str(input.context_sizes)]
+    return shlex.join(arguments)
 
 
 rule prep_native_vcf:
@@ -106,7 +122,7 @@ rule svdb_link:
 
 
 rule compare_native:
-    """Build the per-sample links table and long-format metrics."""
+    """Build links and metrics, plus the optional genomic context report."""
     input:
         svdb      = expand(f"{COMP_DIR}/svdb/{{tool}}.{{set}}.vcf", tool=TOOLS, set=SETS),
         native    = rules.prep_native_vcf.output.vcf,
@@ -119,10 +135,16 @@ rule compare_native:
         ids       = rules.refchanged_ids.output.ids,
         # unfiltered inputs: what the other build has near an unmatched call
         raw_source = config["input_vcf"],
-        raw_native = config["native_vcf"]
+        raw_native = config["native_vcf"],
+        # Declared inputs let Snakemake track changes to context resources.
+        # Empty lists leave the existing comparison usable without context.
+        context_bed = [CONTEXT_BED] if CONTEXT else [],
+        context_flags = [CONTEXT_FLAGS] if CONTEXT else [],
+        context_sizes = [CONTEXT_SIZES] if CONTEXT and CONTEXT_SIZES else []
     output:
         links   = f"{COMP_DIR}/{SAMPLE}.links.tsv.gz",
-        metrics = f"{COMP_DIR}/{SAMPLE}.metrics.tsv"
+        metrics = f"{COMP_DIR}/{SAMPLE}.metrics.tsv",
+        context_report = [f"{COMP_DIR}/{SAMPLE}.context.tsv"] if CONTEXT else []
     params:
         script    = f"{SCRIPTS}/compare_native.py",
         chain     = config["ref"]["liftover_chain"],
@@ -130,7 +152,8 @@ rule compare_native:
         tool_vcfs = " ".join(f"{t}={LIFTOVER_DIR}/{t}/{SAMPLE}.hg38.vcf.gz" for t in TOOLS),
         qc        = " ".join(f"{t}={LIFTOVER_DIR}/{t}/{SAMPLE}.qc_rejected.vcf" for t in TOOLS),
         rejected  = " ".join(f"{t}={p}" for t, p in _REJECTED.items()),
-        svdb      = " ".join(f"{t}:{s}={COMP_DIR}/svdb/{t}.{s}.vcf" for t in TOOLS for s in SETS)
+        svdb      = " ".join(f"{t}:{s}={COMP_DIR}/svdb/{t}.{s}.vcf" for t in TOOLS for s in SETS),
+        context_args = _context_arguments
     shell:
         """
         python3 {params.script} --sample {SAMPLE} --tools {params.tools} \\
@@ -138,5 +161,5 @@ rule compare_native:
             --tool-vcf {params.tool_vcfs} --rejected {params.rejected} --qc-rejected {params.qc} \\
             --lifted-annotated {input.annotated} --refchanged-ids {input.ids} \\
             --svdb {params.svdb} --raw-source {input.raw_source} --raw-native {input.raw_native} \\
-            --chain {params.chain} --links {output.links} --metrics {output.metrics}
+            --chain {params.chain} --links {output.links} --metrics {output.metrics} {params.context_args}
         """
