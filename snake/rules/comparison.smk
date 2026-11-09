@@ -161,6 +161,5 @@ rule compare_native:
             --tool-vcf {params.tool_vcfs} --rejected {params.rejected} --qc-rejected {params.qc} \\
             --lifted-annotated {input.annotated} --refchanged-ids {input.ids} \\
             --svdb {params.svdb} --raw-source {input.raw_source} --raw-native {input.raw_native} \\
-            --chain {params.chain} --links {output.links} --metrics {output.metrics} \\
-            {params.context_args}
+            --chain {params.chain} --links {output.links} --metrics {output.metrics} {params.context_args}
         """
