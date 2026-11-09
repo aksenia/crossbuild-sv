@@ -22,12 +22,15 @@ Optional genomic context labelling:
   uses POS for INS and POS/END for DEL/DUP/INV, including CIPOS/CIEND.
   context follows the native label when a native call is present, otherwise
   the lifted placement's label. '.' means unassessed, not 'unique'. Context
-  reporting and metrics are separate from this labelling step.
+  reporting uses --context-report <TSV>; --context-sizes <TSV> optionally
+  supplies reference genome fractions. Native calls and lifted placements
+  are counted separately. Original comparison metrics retain their meaning.
 """
 import argparse
 import bisect
 import csv
 import gzip
+import math
 import re
 import statistics
 from collections import Counter, defaultdict
@@ -164,9 +167,17 @@ def lookup_context(chrom, start, end, regions, priorities):
     intervals = regions.get(chrom, [])
     best = None
 
-    first = bisect.bisect_right(
-        intervals, start, key=lambda interval: interval[1]
-    )
+    # Find the first interval ending after start. This is binary search over
+    # sorted, non-overlapping intervals, compatible with Python 3.9 as well
+    # as the Python 3.11 pipeline image (bisect's key= requires Python 3.10).
+    low, high = 0, len(intervals)
+    while low < high:
+        middle = (low + high) // 2
+        if intervals[middle][1] <= start:
+            low = middle + 1
+        else:
+            high = middle
+    first = low
 
     for index in range(first, len(intervals)):
         region_start, region_end, label = intervals[index]
@@ -788,8 +799,45 @@ def context_counts(rows):
 
     return counts
 
-# count matched and mismatched for each context label
-def context_summary(counts, priorities):
+# Read reference-area fractions from the sizes table, not from variant counts.
+def load_context_sizes(path, priorities):
+    sizes = {}
+    supplied_fractions = {}
+    expected = set(priorities) | {"unique"}
+
+    with open_text(path) as handle:
+        rows = csv.DictReader(handle, delimiter="\t")
+        if not {"context", "bp", "fraction"}.issubset(rows.fieldnames or []):
+            raise ValueError("Context sizes needs context, bp and fraction columns")
+
+        for row in rows:
+            label = row["context"]
+            if label not in expected or label in sizes:
+                raise ValueError(f"Unknown or duplicate context in sizes table: {label}")
+            try:
+                bp = int(row["bp"])
+                fraction = float(row["fraction"])
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid context size at {path}:{rows.line_num}") from None
+            if bp < 0 or not math.isfinite(fraction) or not 0 <= fraction <= 1:
+                raise ValueError(f"Invalid context size/fraction for {label}")
+            sizes[label] = bp
+            supplied_fractions[label] = fraction
+
+    if set(sizes) != expected:
+        raise ValueError("Sizes table must contain every context flag and unique")
+    genome_bp = sum(sizes.values())
+    if genome_bp <= 0:
+        raise ValueError("The reference genome length must be positive")
+    fractions = {label: bp / genome_bp for label, bp in sizes.items()}
+    if any(abs(fractions[label] - supplied_fractions[label]) > 1e-8 for label in sizes):
+        raise ValueError("Context fractions disagree with their base-pair totals")
+    return fractions
+
+
+# Calculate context shares using separate native and lifted matched baselines.
+# Unassessed calls remain in the totals and appear in a separate '.' row.
+def context_summary(counts, priorities, genome_fractions=None):
     summaries = []
 
     groups = sorted({key[:3] for key in counts})
@@ -805,12 +853,18 @@ def context_summary(counts, priorities):
             for label in labels
         )
 
+        # The original comparison does not define native-only in refchanged.
+        unmatched_defined = not (set_ == "refchanged" and side == "native")
+
         for label in labels:
             matched = counts[(tool, set_, side, label, "matched")]
             unmatched = counts[(tool, set_, side, label, "unmatched")]
 
             matched_share = matched / matched_total if matched_total else NA
-            unmatched_share = unmatched / unmatched_total if unmatched_total else NA
+            unmatched_share = (
+                unmatched / unmatched_total
+                if unmatched_defined and unmatched_total else NA
+            )
 
             enrichment = NA
 
@@ -822,21 +876,69 @@ def context_summary(counts, priorities):
             ):
                 enrichment = unmatched_share / matched_share
 
+            genome_fraction = (genome_fractions or {}).get(label, NA)
+            genome_enrichment = NA
+            if (
+                label != NA
+                and unmatched_share != NA
+                and genome_fraction != NA
+                and genome_fraction > 0
+            ):
+                genome_enrichment = unmatched_share / genome_fraction
+
             summaries.append({
                 "tool": tool,
                 "set": set_,
                 "side": side,
+                "count_unit": "native_call" if side == "native" else "lifted_placement",
                 "context": label,
                 "matched_count": matched,
-                "unmatched_count": unmatched,
+                "unmatched_count": unmatched if unmatched_defined else NA,
                 "matched_total": matched_total,
-                "unmatched_total": unmatched_total,
+                "unmatched_total": unmatched_total if unmatched_defined else NA,
                 "matched_share": matched_share,
                 "unmatched_share": unmatched_share,
                 "unmatched_vs_matched": enrichment,
+                "genome_fraction": genome_fraction,
+                "unmatched_vs_genome": genome_enrichment,
             })
 
     return summaries
+
+
+# Append integer context counts to metrics.tsv; cohort aggregation can sum
+# them without accidentally adding fractions or enrichment ratios together.
+def context_metric_rows(summaries):
+    result = []
+    for summary in summaries:
+        side = summary["side"]
+        unit = "calls" if side == "native" else "placements"
+        for status in ("matched", "unmatched"):
+            count = summary[f"{status}_count"]
+            if count != NA:
+                result.append((
+                    summary["tool"], summary["set"],
+                    f"context={summary['context']}",
+                    f"{side}_context_{status}_{unit}", count
+                ))
+    return result
+
+
+# Write the separate context report, including sample identity and count units.
+def write_context_report(path, sample, summaries):
+    fields = [
+        "sample_id", "tool", "set", "side", "count_unit", "context",
+        "matched_count", "unmatched_count", "matched_total", "unmatched_total",
+        "matched_share", "unmatched_share", "unmatched_vs_matched",
+        "genome_fraction", "unmatched_vs_genome",
+    ]
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        for summary in summaries:
+            writer.writerow({"sample_id": sample, **summary})
+
+
 # ── Metrics ──────────────────────────────────────────────────────────────────
 def rate(num, den):
     return round(num / den, 4) if den else NA
@@ -984,11 +1086,24 @@ def main():
         "--context-report",
         help="Output TSV with context counts, shares and enrichment"
     )
+    p.add_argument(
+        "--context-sizes",
+        help="Optional context sizes TSV; its chromosome scope must match the analysis"
+    )
     a = p.parse_args()
     if bool(a.context_bed) != bool(a.context_flags):
         p.error("--context-bed and --context-flags must be supplied together")
+    if (a.context_report or a.context_sizes) and not a.context_bed:
+        p.error("--context-report and --context-sizes require both context inputs")
+    if a.context_report and a.context_report in (a.links, a.metrics):
+        p.error("The context report must have its own output path")
 
     b = Builder(a, a.tools.split(','))
+    # Load optional reference fractions before creating output files.
+    genome_fractions = (
+        load_context_sizes(a.context_sizes, b.context_priorities)
+        if a.context_sizes else None
+    )
     refchanged = defaultdict(set)
     with open(a.refchanged_ids) as fh:
         for line in fh:
@@ -1001,6 +1116,12 @@ def main():
         rows += b.links(tool, set_, path)
     rows += b.union(rows)
 
+    # Prepare reporting before writing outputs, catching conflicting labels.
+    summaries = (
+        context_summary(context_counts(rows), b.context_priorities, genome_fractions)
+        if b.context_enabled else []
+    )
+
     with gzip.open(a.links, 'wt') as fh:
         fh.write('\t'.join(COLUMNS) + '\n')
         for r in rows:
@@ -1008,8 +1129,12 @@ def main():
 
     with open(a.metrics, 'w') as fh:
         fh.write('sample_id\ttool\tset\tstratum\tmetric\tvalue\n')
-        for rec in yield_metrics(b, refchanged) + comparison_metrics(rows):
+        for rec in yield_metrics(b, refchanged) + comparison_metrics(rows) + context_metric_rows(summaries):
             fh.write('\t'.join(map(str, (a.sample, *rec))) + '\n')
+
+    # Shares are fractions, e.g. 0.20 = 20%; undefined ratios are '.'.
+    if a.context_report:
+        write_context_report(a.context_report, a.sample, summaries)
 
 
 if __name__ == '__main__':
