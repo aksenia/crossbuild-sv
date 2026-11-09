@@ -729,7 +729,114 @@ class Builder:
                 r['n_links'] = len(per_native[r['native_id']])
         return rows
 
+# idenify if a call is native/lifted
+def context_call_key(row, side):
+    if side == "native":
+        if row["native_id"] == NA:
+            return None
 
+        return (row["native_id"],)
+
+    if side == "lifted":
+        if row["source_id"] == NA:
+            return None
+
+        return (
+            row["source_id"],
+            row["lift_chrom"],
+            row["lift_pos"],
+            row["lift_end"]
+        )
+
+    raise ValueError(f"Unknown comparison side: {side}")
+
+def context_counts(rows):
+    """Count distinct calls/placements within one sample."""
+    calls = {}
+
+    for row in rows:
+        for side in ("native", "lifted"):
+            identity = context_call_key(row, side)
+
+            if identity is None:
+                continue
+
+            key = (row["tool"], row["set"], side, identity)
+            label = row[f"{side}_context"]
+            status = (
+                "matched" if row["match_class"] == "matched"
+                else "unmatched"
+            )
+
+            previous = calls.get(key)
+
+            if previous is not None:
+                previous_label, previous_status = previous
+
+                if label != previous_label:
+                    raise ValueError(f"Conflicting context labels for {key}")
+
+                if previous_status == "matched":
+                    status = "matched"
+
+            calls[key] = (label, status)
+
+    counts = Counter()
+
+    for (tool, set_, side, identity), (label, status) in calls.items():
+        counts[(tool, set_, side, label, status)] += 1
+
+    return counts
+
+# count matched and mismatched for each context label
+def context_summary(counts, priorities):
+    summaries = []
+
+    groups = sorted({key[:3] for key in counts})
+    labels = sorted(priorities, key=priorities.get) + ["unique", NA]
+
+    for tool, set_, side in groups:
+        matched_total = sum(
+            counts[(tool, set_, side, label, "matched")]
+            for label in labels
+        )
+        unmatched_total = sum(
+            counts[(tool, set_, side, label, "unmatched")]
+            for label in labels
+        )
+
+        for label in labels:
+            matched = counts[(tool, set_, side, label, "matched")]
+            unmatched = counts[(tool, set_, side, label, "unmatched")]
+
+            matched_share = matched / matched_total if matched_total else NA
+            unmatched_share = unmatched / unmatched_total if unmatched_total else NA
+
+            enrichment = NA
+
+            if (
+                label != NA
+                and matched_share != NA
+                and unmatched_share != NA
+                and matched_share > 0
+            ):
+                enrichment = unmatched_share / matched_share
+
+            summaries.append({
+                "tool": tool,
+                "set": set_,
+                "side": side,
+                "context": label,
+                "matched_count": matched,
+                "unmatched_count": unmatched,
+                "matched_total": matched_total,
+                "unmatched_total": unmatched_total,
+                "matched_share": matched_share,
+                "unmatched_share": unmatched_share,
+                "unmatched_vs_matched": enrichment,
+            })
+
+    return summaries
 # ── Metrics ──────────────────────────────────────────────────────────────────
 def rate(num, den):
     return round(num / den, 4) if den else NA
@@ -872,6 +979,10 @@ def main():
     p.add_argument(
         "--context-flags",
         help="TSV containing genomic context priorities"
+    )
+    p.add_argument(
+        "--context-report",
+        help="Output TSV with context counts, shares and enrichment"
     )
     a = p.parse_args()
     if bool(a.context_bed) != bool(a.context_flags):
