@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 Pool per-sample comparison metrics (compare_native.py metrics.tsv) into one
 cohort table of the same long shape, plus n_samples.

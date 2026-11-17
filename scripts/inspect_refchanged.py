@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Collect evidence for step 2 of docs/plan.md. No classification yet.
+"""Collect and compare allele-state evidence for step 2 of docs/plan.md.
 
 Count unique source IDs, not lines in the ID/tool list.
 Keep original genotypes, flags and multiple records visible.
 NA means unavailable; none means an inspected record has no such flag.
+
+The classification table is deliberately conservative. Exact allele
+comparisons that cannot account for representation changes remain unresolved.
 """
 
 import argparse
@@ -11,6 +14,148 @@ import csv
 import gzip
 from collections import defaultdict
 from pathlib import Path
+
+
+class IndexedFasta:
+    """Fetch sequence from an uncompressed FASTA using its .fai index."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.index = {}
+        with open(f"{self.path}.fai") as handle:
+            for line in handle:
+                fields = line.rstrip("\r\n").split("\t")
+                if len(fields) < 5:
+                    raise ValueError(f"Malformed FASTA index: {self.path}.fai")
+                name, length, offset, line_bases, line_width = fields[:5]
+                values = tuple(map(int, (length, offset, line_bases, line_width)))
+                if values[0] < 0 or values[1] < 0 or values[2] <= 0 or values[3] < values[2]:
+                    raise ValueError(f"Invalid FASTA index entry for {name}: {self.path}.fai")
+                self.index[name] = values
+        self.handle = open(self.path, "rb")
+        if self.handle.read(2) == b"\x1f\x8b":
+            self.handle.close()
+            raise ValueError("Approach C requires an uncompressed FASTA with a .fai index")
+
+    def close(self):
+        self.handle.close()
+
+    def fetch(self, contig, start, end):
+        if contig not in self.index:
+            raise ValueError(f"Contig {contig!r} is missing from {self.path}.fai")
+        length, offset, line_bases, line_width = self.index[contig]
+        if start < 0 or end < start or end > length:
+            raise ValueError(f"FASTA interval out of range: {contig}:{start}-{end}")
+        chunks = []
+        cursor = start
+        while cursor < end:
+            column = cursor % line_bases
+            count = min(end - cursor, line_bases - column)
+            byte_offset = offset + (cursor // line_bases) * line_width + column
+            self.handle.seek(byte_offset)
+            chunk = self.handle.read(count)
+            if len(chunk) != count:
+                raise ValueError(f"Could not read indexed FASTA interval: {contig}:{start}-{end}")
+            chunks.append(chunk)
+            cursor += count
+        return b"".join(chunks).decode("ascii").upper()
+
+
+def reverse_complement(allele):
+    return allele.translate(str.maketrans("ACGTNacgtn", "TGCANtgcan"))[::-1].upper()
+
+
+def allele_relation(source, lifted_ref):
+    """Compare a lifted REF to source alleles without normalizing coordinates."""
+    ref = source["ref"].upper()
+    alts = source["alt"].upper().split(",")
+    lifted_ref = lifted_ref.upper()
+    if not lifted_ref or set(lifted_ref) - set("ACGTN"):
+        return "unresolved"
+
+    matches_ref = ref in (lifted_ref, reverse_complement(lifted_ref))
+    matches_alt = [
+        alt in (lifted_ref, reverse_complement(lifted_ref))
+        for alt in alts if alt and not (set(alt) - set("ACGTN"))
+    ]
+    if any(matches_alt) and matches_ref:
+        return "ambiguous"
+    if any(matches_alt):
+        return "swap"
+    if matches_ref:
+        return "reference_allele"
+    if len(matches_alt) == len(alts):
+        return "third_allele"
+    return "unresolved"
+
+
+def classification_rows(ids, flagged_by, source, data, fasta):
+    rows = []
+    for sid in ids:
+        tool_flags = []
+        swap_reported = False
+        raw_relations = []
+        fasta_relations = []
+        fasta_mismatches = 0
+
+        for tool in ("crossmap", "bcftools", "picard", "transanno"):
+            if tool in flagged_by[sid]:
+                tool_flags.append(tool)
+            raw_records = data[tool]["raw"].get(sid, [])
+            for record in raw_records:
+                swap = record["SWAP"]
+                if swap in ("1", "-1", "present"):
+                    swap_reported = True
+                    if tool not in tool_flags:
+                        tool_flags.append(tool)
+                relation = allele_relation(source[sid][0], record["ref"])
+                raw_relations.append(relation)
+
+                if set(record["ref"].upper()) - set("ACGTN") or not record["ref"]:
+                    continue
+                expected = fasta.fetch(
+                    record["chrom"], int(record["pos"]) - 1,
+                    int(record["pos"]) - 1 + len(record["ref"]),
+                )
+                if expected != record["ref"].upper():
+                    fasta_mismatches += 1
+                    continue
+                fasta_relations.append(relation)
+
+        approach_a = "swap" if swap_reported else "no_swap_flag"
+        decisive_raw = set(raw_relations) - {"unresolved"}
+        if "third_allele" in decisive_raw:
+            approach_b = "third_allele"
+        elif "swap" in decisive_raw and "reference_allele" in decisive_raw:
+            approach_b = "conflict"
+        elif "swap" in decisive_raw:
+            approach_b = "swap"
+        elif "ambiguous" in decisive_raw:
+            approach_b = "unresolved"
+        elif "reference_allele" in decisive_raw:
+            approach_b = "reference_allele"
+        else:
+            approach_b = "unresolved"
+
+        decisive_fasta = set(fasta_relations) - {"unresolved"}
+        if (len(decisive_fasta) > 1 or "ambiguous" in decisive_fasta
+                or (fasta_mismatches and decisive_fasta)):
+            approach_c = "conflict"
+        elif decisive_fasta:
+            approach_c = next(iter(decisive_fasta))
+        elif fasta_mismatches:
+            approach_c = "reference_mismatch"
+        else:
+            approach_c = "unresolved"
+
+        rows.append({
+            "source_id": sid,
+            "tools": ",".join(tool_flags) or "none",
+            "approach_A": approach_a,
+            "approach_B": approach_b,
+            "approach_C": approach_c,
+        })
+    return rows
 
 
 def read_vcf(path, ids, headers):
@@ -63,6 +208,8 @@ def main():
     parser.add_argument("run", type=Path, help="existing pipeline run directory")
     parser.add_argument("--sample", default="HG002", help="pipeline sample name")
     parser.add_argument("--out", type=Path, help="new or empty output directory")
+    parser.add_argument("--hg38-fasta", type=Path, required=True,
+                        help="uncompressed hg38 FASTA with a .fai index (Approach C)")
     args = parser.parse_args()
     run, sample = args.run.expanduser().resolve(), args.sample
     out = args.out or run / "step2_refstate"
@@ -86,6 +233,8 @@ def main():
     for path in inputs:
         if not path.is_file():
             raise ValueError(f"Missing input: {path}")
+    if not args.hg38_fasta.is_file() or not Path(f"{args.hg38_fasta}.fai").is_file():
+        raise ValueError(f"Approach C requires the FASTA and its .fai index: {args.hg38_fasta}")
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise ValueError(f"Choose a new or empty output directory: {out}")
 
@@ -149,11 +298,31 @@ def main():
                 if not found:
                     row = dict.fromkeys(columns, "NA")
                     writer.writerow({**row, **base, "tool": tool, "stage": "missing"})
-    summary.extend(["Counts per stage can overlap; allele categories can overlap.",
-                    "No classification, normalization or hg38 REF check performed."])
+    with open(out / "classifications.tsv", "w", newline="") as handle:
+        fields = ["source_id", "tools", "approach_A", "approach_B", "approach_C"]
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        fasta = IndexedFasta(args.hg38_fasta)
+        try:
+            classifications = classification_rows(ids, flagged_by, source, data, fasta)
+            writer.writerows(classifications)
+        finally:
+            fasta.close()
+    summary.extend([
+        "Counts per stage can overlap; allele categories can overlap.",
+        "Approach A: any raw-tool SWAP flag means swap; otherwise no_swap_flag.",
+        "Approach B: exact lifted-REF/source-allele comparison; third_allele takes precedence.",
+        "Approach C: same comparison after validating lifted REF against the hg38 FASTA.",
+        "Exact allele comparisons do not normalize coordinates; unresolved cases need review.",
+        f"Classification rows: {len(classifications)} unique source IDs.",
+        f"Approach A swaps: {sum(row['approach_A'] == 'swap' for row in classifications)}.",
+        f"Approach B swaps: {sum(row['approach_B'] == 'swap' for row in classifications)}.",
+        f"Approach C swaps: {sum(row['approach_C'] == 'swap' for row in classifications)}.",
+    ])
     (out / "summary.txt").write_text("\n".join(summary) + "\n")
     (out / "flag_headers.txt").write_text("\n".join(headers) or "No flag definitions found.\n")
     print("\n".join(summary))
+    print(f"Classifications: {out / 'classifications.tsv'}")
     print(f"Results: {out.resolve()}")
 
 
