@@ -131,6 +131,22 @@ class FinalizeTest(unittest.TestCase):
         self.assertEqual(rejected[0][6], 'QC_FAILED')
         self.assertIn('QC_REJECT_REASON=REF_MISMATCH', rejected[0][7])
 
+    def test_ci_from_source(self):
+        # CrossMap lifts CIEND like a position; the source offsets are restored
+        d = self.tmp.name
+        header = '##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
+        source = os.path.join(d, 'source_ci.vcf')
+        with open(source, 'w') as fh:
+            fh.write(header + '1\t101\tA\tN\t<DEL>\t.\tPASS\tSVTYPE=DEL;END=351;CIPOS=-5,5;CIEND=0,1\n')
+        vcf = header + 'chr1\t201\tA\tA\t<DEL>\t.\tPASS\tSVTYPE=DEL;END=501;CIPOS=-5,5;CIEND=501,1\n'
+        out, rej = os.path.join(d, 'out_ci.vcf'), os.path.join(d, 'rej_ci.vcf')
+        subprocess.run([sys.executable, os.path.join(ROOT, 'liftover', 'finalize_sv.py'),
+                        '--tool', 'crossmap', '--source', source, '--chain', self.chain_path,
+                        '--fasta', self.fasta_path, '--output', out, '--reject', rej],
+                       input=vcf, text=True, check=True, capture_output=True)
+        self.assertEqual(body(out)[0][7].strip(),
+                         'SVTYPE=DEL;END=501;CIPOS=-5,5;CIEND=0,1;LIFTOVER_TOOL=crossmap')
+
 
 if __name__ == '__main__':
     unittest.main()

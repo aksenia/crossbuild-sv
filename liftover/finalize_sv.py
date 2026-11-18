@@ -15,7 +15,9 @@ representation. This script then:
                         tool's POS (else END_NOT_IN_CHAIN / INVERTED_CHAIN /
                         CHAIN_DOES_NOT_MATCH_TOOL_POS)
                         (native mode: the record's own END is kept)
-- tags INFO/LIFTOVER_TOOL=<tool> (tool mode only).
+- tags INFO/LIFTOVER_TOOL=<tool> (tool mode only);
+- copies CIPOS/CIEND from the source record (tool mode only): they are
+  offsets, not coordinates, but CrossMap lifts CIEND like a position.
 
 Reads a VCF from stdin, writes plain VCFs.
 """
@@ -24,7 +26,7 @@ import bisect
 import gzip
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pysam
 
@@ -83,6 +85,7 @@ class SourceVariant:
     chrom: str
     pos: int
     end: int
+    ci: dict = field(default_factory=dict)
 
 
 def load_source(path):
@@ -95,8 +98,9 @@ def load_source(path):
             parts = line.rstrip('\n').split('\t')
             info = parse_info(parts[7])
             end = first_int(info.get('END'))
+            ci = {k: info[k] for k in ('CIPOS', 'CIEND') if k in info}
             variants[parts[2]] = SourceVariant(parts[0], int(parts[1]),
-                                               end if end is not None else int(parts[1]))
+                                               end if end is not None else int(parts[1]), ci)
     return variants
 
 
@@ -287,6 +291,8 @@ def main():
                 continue
             info['END'] = str(end)
             if args.tool:
+                if parts[2] in source:
+                    info.update(source[parts[2]].ci)
                 info['LIFTOVER_TOOL'] = args.tool
             parts[7] = format_info(info)
             out.write('\t'.join(parts) + '\n')

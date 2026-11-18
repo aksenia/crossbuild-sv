@@ -209,6 +209,9 @@ Findings to keep in mind when reading results (reported, not "fixed"):
   chr14/21/Y, 65 of 78 non-exact CrossMap matches are INS).
 - **CrossMap does not lift END of symbolic DUPs** (writes END=POS); the
   pipeline recomputes END through the chain for all tools anyway.
+- **CrossMap lifts CIEND like a position** (`CIEND=0,1` becomes
+  `CIEND=19907852,1`; HG002 WG: 2,036 of 2,325 records, other tools none).
+  `finalize_sv.py` copies CIPOS/CIEND from the source record for all tools.
 - **Inverted chain segments**: CrossMap and bcftools keep POS at the mapped
   source POS (the right end of the hg38 interval; bcftools adds `FLIP`);
   transanno reverse-complements the symbolic ALT (`<DUP:TANDEM>` →
