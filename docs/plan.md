@@ -246,14 +246,31 @@ lifted-only, and swapped records keep the old SVTYPE.
 
 ### Plan
 
-1. One tag per source ID on every tool's record, e.g.
-   `INFO/HG38_REF=swap|third_allele`. Rule: A (any tool says swap, 66 IDs),
-   B (swap unless a tool says third allele, 59 IDs) or C (check against the
-   hg38 FASTA).
-2. `compare_native.py`: lifted-only + `HG38_REF=swap` + hom source GT gives
+1. One tag per source ID on every tool's record:
+   `INFO/HG38_REF=swap|third_allele|undetermined`. One rule decides the
+   label: a check against the hg38 FASTA, not the tool flags. CrossMap and
+   Picard never flag, and bcftools and transanno conflict on 7 IDs, so the
+   flags cannot give the same label for all tools.
+
+   Check, per REF-changed source ID, at the lifted hg38 position (reverse
+   complement the source alleles if the lift is on an inverted chain):
+
+   - hg38 sequence equals the source ALT: `swap`;
+   - hg38 sequence equals neither the source REF nor the source ALT:
+     `third_allele`;
+   - symbolic ALT (no sequence to compare), or hg38 equals the source REF:
+     `undetermined`. Report the count; it should be small.
+
+   Run the check on each tool's own placement. If two tools' placements
+   give different labels, list those IDs and decide on them separately.
+2. Cross-check, once, not a tag: a table of the FASTA label against the
+   bcftools `SWAP` and transanno `REF_CHANGED` flags. For reference, the
+   flags alone would give 66 swap IDs (any tool says swap) or 59 (swap
+   unless a tool says third allele).
+3. `compare_native.py`: lifted-only + `HG38_REF=swap` + hom source GT gives
    `diff_reason=hg38_ref_matches_sample`, counted separately.
-3. Optional: set SVTYPE of swapped records to match their hg38 alleles.
-4. Report the change in `refchanged` metrics.
+4. Optional: set SVTYPE of swapped records to match their hg38 alleles.
+5. Report the change in `refchanged` metrics.
 
 Data (in `crossbuild-sv-dev/runs/wg4`): `liftover/<tool>/HG002.hg38.raw.vcf.gz`,
 `liftover/merged/HG002.refchanged_ids.tsv`, links rows with `set=refchanged`.
