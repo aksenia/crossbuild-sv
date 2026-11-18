@@ -212,6 +212,15 @@ Findings to keep in mind when reading results (reported, not "fixed"):
 - **CrossMap lifts CIEND like a position** (`CIEND=0,1` becomes
   `CIEND=19907852,1`; HG002 WG: 2,036 of 2,325 records, other tools none).
   `finalize_sv.py` copies CIPOS/CIEND from the source record for all tools.
+- **Lift strand**: Picard tags reverse-complemented records
+  `ReverseComplementedAlleles`, bcftools `FLIP`, transanno
+  `ORIGINAL_STRAND=+|-`; CrossMap has no tag. `finalize_sv.py` sets one
+  `LIFT_STRAND=+|-|.` for every tool from the tool's own chain and, on `-`,
+  negates CIPOS/CIEND and swaps them for intervals. On the UCSC chain an
+  inversion is a small chain nested in a gap of the large `+` chain, so a
+  chain with a block on the source POS wins over a wider span. On chr14/21/Y
+  it agrees with all three tool tags (`-`: 16 per UCSC tool, 17 transanno,
+  which places one more DEL on an inverted segment of its own chain).
 - **Inverted chain segments**: CrossMap and bcftools keep POS at the mapped
   source POS (the right end of the hg38 interval; bcftools adds `FLIP`);
   transanno reverse-complements the symbolic ALT (`<DUP:TANDEM>` →

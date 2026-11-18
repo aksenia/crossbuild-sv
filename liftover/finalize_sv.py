@@ -16,8 +16,13 @@ representation. This script then:
                         CHAIN_DOES_NOT_MATCH_TOOL_POS)
                         (native mode: the record's own END is kept)
 - tags INFO/LIFTOVER_TOOL=<tool> (tool mode only);
+- tags INFO/LIFT_STRAND=+|-|. (tool mode only): strand of the chain, in the
+  tool's own chain file, that covers the source POS and the tool's POS
+  (see ChainIndex.strand);
 - copies CIPOS/CIEND from the source record (tool mode only): they are
   offsets, not coordinates, but CrossMap lifts CIEND like a position.
+  On a - lift they are negated and, for intervals, swapped (hg38 POS is
+  the source END side).
 
 Reads a VCF from stdin, writes plain VCFs.
 """
@@ -35,6 +40,7 @@ INTERVAL_TYPES = {'DEL', 'DUP', 'INV'}
 _HEADERS = {
     'END': '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant on hg38">',
     'LIFTOVER_TOOL': '##INFO=<ID=LIFTOVER_TOOL,Number=.,Type=String,Description="Liftover tool(s) that produced this record">',
+    'LIFT_STRAND': '##INFO=<ID=LIFT_STRAND,Number=1,Type=String,Description="Strand of the chain the record was lifted through (+, -, or . if no chain covers it)">',
     'QC_REJECT_REASON': '##INFO=<ID=QC_REJECT_REASON,Number=1,Type=String,Description="Why the record failed post-liftover QC">',
     'QC_FAILED': '##FILTER=<ID=QC_FAILED,Description="Failed post-liftover QC (REF or END could not be established)">',
 }
@@ -134,6 +140,16 @@ class Chain:
             target = self.target_size - target - 1
         return target + 1
 
+    def covers(self, source_pos, target_pos):
+        """True if both 1-based bases fall inside the chain's spans (gaps included)."""
+        first, last = self.blocks[0], self.blocks[-1]
+        t_start = first.target_start
+        t_end = last.target_start + last.source_end - last.source_start
+        if self.target_strand == '-':
+            t_start, t_end = self.target_size - t_end, self.target_size - t_start
+        return (first.source_start < source_pos <= last.source_end
+                and t_start < target_pos <= t_end)
+
 
 class ChainIndex:
     """UCSC-format chain file indexed by source contig (+ strand sources only)."""
@@ -170,6 +186,25 @@ class ChainIndex:
         hits = [(c.score, c.target_name, t) for c in self.by_source.get(bare_contig(chrom), [])
                 if (t := c.map_point(pos))]
         return max(hits)[1:] if hits else None
+
+    def strand(self, src, target_chrom, target_pos):
+        """
+        Strand of the chain the record was lifted through, else '.'.
+        Candidates are chains whose spans (gaps included) cover the source POS
+        and the tool's POS, so an anchor base in a chain gap still gets one.
+        A chain with a block on the source POS wins (best score); else the
+        innermost span. Not best score overall: UCSC inversions are small
+        chains nested in a gap of the large + chain, whose span covers them.
+        """
+        found = [c for c in self.by_source.get(bare_contig(src.chrom), [])
+                 if bare_contig(c.target_name) == bare_contig(target_chrom)
+                 and c.covers(src.pos, target_pos)]
+        on_block = [c for c in found if c.map_point(src.pos)]
+        if on_block:
+            return max(on_block, key=lambda c: c.score).target_strand
+        if found:
+            return min(found, key=lambda c: c.blocks[-1].source_end - c.blocks[0].source_start).target_strand
+        return '.'
 
     def target_end(self, src, target_chrom, target_pos):
         """
@@ -227,6 +262,24 @@ def target_end(parts, info, source, chains):
     return chains.target_end(src, parts[0], pos)
 
 
+def oriented_ci(ci, strand, svtype):
+    """
+    Source CIPOS/CIEND for the hg38 record. On a - lift the offsets change
+    sign and, for intervals, CIPOS and CIEND trade places (hg38 POS is the
+    source END side); a missing one counts as 0,0. INS has one breakpoint.
+    """
+    if strand != '-' or not ci:
+        return dict(ci)
+
+    def flip(value):
+        lo, hi = (int(x) for x in value.split(','))
+        return f'{-hi},{-lo}'
+
+    if svtype == 'INS':
+        return {k: flip(v) for k, v in ci.items()}
+    return {'CIPOS': flip(ci.get('CIEND', '0,0')), 'CIEND': flip(ci.get('CIPOS', '0,0'))}
+
+
 def check_ref(fasta, chrom, pos, ref):
     if chrom not in fasta.references:
         raise ValueError('CONTIG_NOT_IN_HG38')
@@ -243,7 +296,7 @@ def reject(parts, info, reason):
 
 
 def with_headers(header, tool):
-    wanted = ['END', 'QC_REJECT_REASON', 'QC_FAILED'] + (['LIFTOVER_TOOL'] if tool else [])
+    wanted = ['END', 'QC_REJECT_REASON', 'QC_FAILED'] + (['LIFT_STRAND', 'LIFTOVER_TOOL'] if tool else [])
     present = '\n'.join(header)
     extra = [_HEADERS[k] for k in wanted if f'<ID={k},' not in present]
     if tool and '<ID=LIFTOVER_TOOL,' in present:
@@ -291,8 +344,11 @@ def main():
                 continue
             info['END'] = str(end)
             if args.tool:
-                if parts[2] in source:
-                    info.update(source[parts[2]].ci)
+                src = source.get(parts[2])
+                strand = chains.strand(src, parts[0], int(parts[1])) if src else '.'
+                if src:
+                    info.update(oriented_ci(src.ci, strand, info.get('SVTYPE')))
+                info['LIFT_STRAND'] = strand
                 info['LIFTOVER_TOOL'] = args.tool
             parts[7] = format_info(info)
             out.write('\t'.join(parts) + '\n')
