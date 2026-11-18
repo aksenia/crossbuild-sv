@@ -93,6 +93,7 @@ One row per (tool, set, link). `.` = not applicable / missing.
 | `closest_tool` | tool(s) whose placement of this source ID is closest to the native call (`|d_pos|+|d_end|`, all tools, ties comma-joined) |
 | `svtype`, `size_bin`, `precision` | strata, taken from the native call when present (it is the reference), else from the source call. Size bins: `<50`, `50-100`, `100-500`, `500-1k`, `1k-10k`, `>=10k` |
 | `in_region` | 1 if any native, source or lifted region flag is set |
+| `lift_strand` | `LIFT_STRAND` of the lifted placement (`+`, `-`, `.` if none or no lifted call) |
 
 ## `comparison/<sample>.metrics.tsv`
 
@@ -121,8 +122,9 @@ Strata: `all`, `svtype=<T>`. Counted over source IDs.
 
 ### `set=main` / `set=refchanged`: agreement with native
 
-Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`, and
-`svtype` crossed with size bin (e.g. `svtype=DEL|size=1k-10k`).
+Strata: `all`, `svtype=`, `size=`, `precision=`, `region=any|none`,
+`svtype` crossed with size bin (e.g. `svtype=DEL|size=1k-10k`), and
+`strand=+|-` (lifted calls only: no recall or `native_only_*` metrics).
 
 | metric | meaning |
 |---|---|

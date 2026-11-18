@@ -4,8 +4,9 @@ bcftools + picard). Records: sequence DEL and INS, symbolic DUP (Picard
 rejects it), a REF-changed ID, a native-only call, a 1:N SVDB cluster (one
 native INS + two near-duplicate source INS). Hand-made: Picard's record of
 14_19259092_DEL_19259140 moved to its qc_rejected file (dev data has no QC
-rejections). The chain is built here: one 2 kb block around each lifted
-record, so hg38 loci away from them have no hg19 sequence.
+rejections); LIFT_STRAND added to the merged records, `-` on
+14_20744596_DEL_20744654. The chain is built here: one 2 kb block around
+each lifted record, so hg38 loci away from them have no hg19 sequence.
 """
 import csv
 import gzip
@@ -99,6 +100,8 @@ class CompareNativeTest(unittest.TestCase):
         qc = self.rows('bcftools', source_id='14_19259092_DEL_19259140')[0]
         self.assertEqual((qc['match_class'], qc['tools_rejected']), ('lifted_only', 'picard:qc:REF_MISMATCH'))
         self.assertEqual(self.rows('bcftools', 'refchanged', match_class='native_only'), [])
+        self.assertEqual({r['lift_strand'] for r in self.rows('union', source_id='14_20744596_DEL_20744654')}, {'-'})
+        self.assertEqual(self.rows('bcftools', match_class='native_only')[0]['lift_strand'], '.')
 
     def test_union(self):
         # DUP: Picard has it native_only, bcftools matched -> union matched only
@@ -153,10 +156,13 @@ class CompareNativeTest(unittest.TestCase):
             ('bcftools', 'main', 'all', 'native_only_no_hg19_sequence'): '1',
             ('picard', 'main', 'all', 'native_only_near_same_type'): '1',
             ('picard', 'main', 'all', 'native_only_near_offset_1-10'): '1',
+            ('bcftools', 'main', 'strand=+', 'lifted_ids'): '5',
+            ('bcftools', 'main', 'strand=-', 'lifted_ids'): '1',
         }
         self.assertEqual({k: m.get(k) for k in expect}, expect)
         self.assertNotIn(('bcftools', 'refchanged', 'all', 'recall'), m)
         self.assertNotIn(('bcftools', 'refchanged', 'all', 'native_only_none'), m)
+        self.assertNotIn(('bcftools', 'main', 'strand=+', 'recall'), m)
 
 
 if __name__ == '__main__':

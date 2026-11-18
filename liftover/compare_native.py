@@ -12,9 +12,9 @@ sample_id so a cohort is just their concatenation:
                  merged set of all tools. Columns: see docs/comparison.md.
   metrics.tsv    long format (sample_id, tool, set, stratum, metric, value):
                  counts and rates per stratum (all, svtype=, size=,
-                 svtype=|size=, region=, precision=). Counts are kept next
-                 to rates so a cohort can pool numerators/denominators
-                 instead of averaging rates.
+                 svtype=|size=, region=, precision=, strand=). Counts are
+                 kept next to rates so a cohort can pool numerators/
+                 denominators instead of averaging rates.
 """
 import argparse
 import bisect
@@ -50,7 +50,7 @@ COLUMNS = [
     'exact', 'd_pos', 'd_end', 'd_svlen', 'recip_overlap', 'within_ci',
     'chrom_match', 'svtype_match', 'gt_match', 'closest_tool',
     'diff_reason', 'nearest_dist', 'nearest_size_ratio',
-    'svtype', 'size_bin', 'in_region', 'precision',
+    'svtype', 'size_bin', 'in_region', 'precision', 'lift_strand',
 ]
 
 
@@ -275,10 +275,12 @@ class Builder:
         self.nat = {r['id']: r for r in records(a.native)}
         self.placements, self.svlens = load_placements(kv_args(a.tool_vcf))
         self.rejected = load_rejections(kv_args(a.rejected), kv_args(a.qc_rejected))
-        self.lift_flags = {}
+        self.lift_flags, self.lift_strand = {}, {}
         for path in a.lifted_annotated:
             for r in records(path):
-                self.lift_flags[(r['id'], r['chrom'], r['pos'], end_of(r))] = flags(r, HG38_FLAGS)
+                key = (r['id'], r['chrom'], r['pos'], end_of(r))
+                self.lift_flags[key] = flags(r, HG38_FLAGS)
+                self.lift_strand[key] = r['info'].get('LIFT_STRAND', NA)
         chains = ChainIndex(a.chain)
         self.hg19 = OtherBuild(raw_calls(a.raw_source, chains))
         self.hg38 = OtherBuild(raw_calls(a.raw_native))
@@ -334,6 +336,7 @@ class Builder:
             lifted_tools = {t for ts in self.placements.get(sid, {}).values() for t in ts}
             row.update(lift_chrom=chrom, lift_pos=pos, lift_end=end,
                        lift_svlen=self.svlens.get((sid, chrom, pos), NA),
+                       lift_strand=self.lift_strand.get((sid, chrom, pos, end), NA),
                        tools_same_placement=','.join(t for t in self.tools if t in here) or NA,
                        n_tools_lifted=len(lifted_tools), n_placements=len(self.placements.get(sid, {})),
                        tools_rejected=','.join(f'{t}:{r}' for t, r in sorted(self.rejected.get(sid, {}).items())
@@ -475,6 +478,8 @@ def strata(row):
     if row['svtype'] != NA and row['size_bin'] != NA:
         yield f"svtype={row['svtype']}|size={row['size_bin']}"
     yield 'region=any' if row['in_region'] else 'region=none'
+    if row['lift_strand'] in ('+', '-'):
+        yield f"strand={row['lift_strand']}"
 
 
 def offset_metrics(rs, matched):
@@ -532,14 +537,17 @@ def comparison_metrics(rows):
         m['native_only'] = m['native_ids'] - m['native_matched']
         m['precision'] = rate(m['matched_ids'], m['lifted_ids'])
         m['recall'] = rate(m['native_matched'], m['native_ids'])
-        if set_ == 'refchanged':   # no native-only calls here, so no recall
+        # no native-only calls in the REF-changed set or in a strand stratum
+        # (strand is a property of the lifted call), so no recall
+        no_native = set_ == 'refchanged' or stratum.startswith('strand=')
+        if no_native:
             for k in ('native_ids', 'native_only', 'recall'):
                 del m[k]
         m['exact_rate'] = rate(m['exact_ids'], m['matched_ids'])
         m['within_ci_rate'] = rate(m['within_ci_ids'], m['matched_ids'])
         m['gt_match_rate'] = rate(m['gt_match_ids'], m['matched_ids'])
         m.update({k: v for k, v in offset_metrics(rs, matched).items()
-                  if set_ == 'main' or not k.startswith('native_only')})
+                  if not (no_native and k.startswith('native_only'))})
         for d in ('d_pos', 'd_end'):
             vals = [abs(r[d]) for r in matched if r[d] != NA]
             m[f'median_abs_{d}'] = statistics.median(vals) if vals else NA
