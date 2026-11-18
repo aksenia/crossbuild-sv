@@ -161,7 +161,7 @@ about 2–3 minutes on 8 cores.
 | `liftover/<tool>/<s>.rejected.vcf` | Tool rejections (CrossMap: `<s>.hg38.unmap.vcf`) |
 | `liftover/<tool>/<s>.qc_rejected.vcf` | Lifted but failed post-liftover QC (`QC_REJECT_REASON`) |
 | `liftover/<tool>/<s>.normalize.log` | `bcftools norm` / finalize log |
-| `liftover/transanno/<s>.log` | Transanno run log |
+| `liftover/<tool>/<s>.log` | Tool run log (stdout and stderr) |
 | `liftover/merged/<s>.refchanged_ids.tsv` | `ID<TAB>tool` for every REF-changed flag |
 | `annotated/source/<s>.hg19.annotated.vcf.gz` | Source VCF with region flags |
 | `annotated/merged/<s>.merged.hg38.annotated.vcf.gz` | Merged main set with region flags |

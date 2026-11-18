@@ -92,6 +92,8 @@ rule crossmap_liftover:
     output:
         vcf   = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.raw.vcf.gz",
         unmap = f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.hg38.unmap.vcf"
+    log:
+        f"{LIFTOVER_DIR}/crossmap/{SAMPLE}.log"
     params:
         chain = config["ref"]["liftover_chain"],
         fasta = config["ref"]["hg38_fasta"],
@@ -99,6 +101,7 @@ rule crossmap_liftover:
     shell:
         """
         mkdir -p {LIFTOVER_DIR}/crossmap
+        exec > {log} 2>&1
         CrossMap vcf --chromid l {params.chain} {input.vcf} {params.fasta} {params.raw}
         [ -f {params.raw}.unmap ] \
             && mv {params.raw}.unmap {output.unmap} \
@@ -119,6 +122,8 @@ rule bcftools_liftover:
     output:
         vcf      = f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.hg38.raw.vcf.gz",
         rejected = f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.rejected.vcf"
+    log:
+        f"{LIFTOVER_DIR}/bcftools/{SAMPLE}.log"
     params:
         chain = config["ref"]["liftover_chain"],
         srcfa = config["ref"]["hg19_fasta_chr"],
@@ -126,6 +131,7 @@ rule bcftools_liftover:
     shell:
         """
         mkdir -p {LIFTOVER_DIR}/bcftools
+        exec > {log} 2>&1
         bcftools +liftover -Ov {input.vcf} \
             -- -c {params.chain} \
                --src-fasta-ref {params.srcfa} \
@@ -150,6 +156,8 @@ rule picard_liftover:
     output:
         vcf      = f"{LIFTOVER_DIR}/picard/{SAMPLE}.hg38.raw.vcf.gz",
         rejected = f"{LIFTOVER_DIR}/picard/{SAMPLE}.rejected.vcf"
+    log:
+        f"{LIFTOVER_DIR}/picard/{SAMPLE}.log"
     params:
         chain     = config["ref"]["liftover_chain"],
         fasta     = config["ref"]["hg38_fasta"],
@@ -159,6 +167,7 @@ rule picard_liftover:
     shell:
         """
         mkdir -p {LIFTOVER_DIR}/picard
+        exec > {log} 2>&1
         RAW={LIFTOVER_DIR}/picard/{SAMPLE}.hg38.tmp.vcf
         PATCHED={LIFTOVER_DIR}/picard/{SAMPLE}.hg19.patched.vcf.gz
 
