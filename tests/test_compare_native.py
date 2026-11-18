@@ -84,6 +84,13 @@ class CompareNativeTest(unittest.TestCase):
         demoted = self.rows('bcftools', source_id='21_46338850_INS_46338850')
         self.assertEqual([r['match_class'] for r in demoted], ['lifted_only'])
 
+    def test_placement_keeps_end(self):
+        # tools agree on POS but not on END: a rebuilt union row keeps its END
+        b = object.__new__(cn.Builder)
+        b.placements = {'S': {('chr1', 100, 200): ['crossmap'], ('chr1', 100, 300): ['picard']}}
+        self.assertEqual(b.placement('S', 'chr1', 100, 'union')[0], ('chr1', 100, 200))
+        self.assertEqual(b.placement('S', 'chr1', 100, 'union', 300)[0], ('chr1', 100, 300))
+
     def test_rows(self):
         dup = self.rows('bcftools', source_id='Y_22298258_DUP_22303389')[0]
         self.assertEqual((dup['match_class'], dup['exact'], dup['d_pos'], dup['within_ci']),

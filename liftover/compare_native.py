@@ -284,9 +284,11 @@ class Builder:
         self.hg38 = OtherBuild(raw_calls(a.raw_native))
         self.hg19_coverage = Hg19Coverage(chains)
 
-    def placement(self, sid, chrom, pos, tool):
-        """The placement SVDB saw; prefer this tool's own if several share CHROM/POS."""
-        keys = [(k, ts) for k, ts in self.placements.get(sid, {}).items() if k[:2] == (chrom, pos)]
+    def placement(self, sid, chrom, pos, tool, end=None):
+        """The placement SVDB saw; prefer this tool's own if several share CHROM/POS.
+        A known END (rebuilt union rows) picks that placement exactly."""
+        keys = [(k, ts) for k, ts in self.placements.get(sid, {}).items()
+                if k[:2] == (chrom, pos) and end in (None, k[2])]
         keys.sort(key=lambda kt: tool not in kt[1])
         return keys[0] if keys else ((chrom, pos, pos), [])
 
@@ -318,7 +320,7 @@ class Builder:
             regions += nf.values()
 
         if lifted:
-            sid, chrom, pos = lifted
+            sid, chrom, pos, *end = lifted
             src = self.src.get(sid)
             if src:
                 sf = flags(src, SRC_FLAGS)
@@ -326,7 +328,7 @@ class Builder:
                            src_svtype=src['info'].get('SVTYPE', NA), src_svlen=svlen_of(src), src_gt=src['gt'],
                            **{f'src_{k}': v for k, v in sf.items()})
                 regions += sf.values()
-            (chrom, pos, end), here = self.placement(sid, chrom, pos, tool)
+            (chrom, pos, end), here = self.placement(sid, chrom, pos, tool, *end)
             lf = self.lift_flags.get((sid, chrom, pos, end), dict.fromkeys(HG38_FLAGS, 0))
             regions += lf.values()
             lifted_tools = {t for ts in self.placements.get(sid, {}).values() for t in ts}
@@ -434,7 +436,7 @@ class Builder:
         still_matched = {r['source_id'] for r in kept if r['match_class'] == 'matched'}
         seen = set()
         for r in rows:
-            key = (r['source_id'], r['lift_chrom'], r['lift_pos'])
+            key = (r['source_id'], r['lift_chrom'], r['lift_pos'], r['lift_end'])
             if id(r) in demoted and r['source_id'] not in still_matched and key not in seen:
                 seen.add(key)
                 kept.append(self.row(r['tool'], r['set'], 'lifted_only', None, key))
