@@ -71,6 +71,19 @@ regions:
   segdups_hg19:  /app/regions/segdups/segdups_hg19.bed.gz
   header:        /app/regions/header.txt
 
+  # Optional Step 1: genomic context. Set giab_context to the prepared hg38
+  # BED to enable labelling and comparison/<sample>.context.tsv. Paths must
+  # be accessible inside the container; native_vcf must also be configured.
+  # Example BED: /ref/context/giab_v3.6_context.hg38.bed.gz
+  giab_context: null
+  giab_context_flags: /app/regions/giab_context_flags.tsv
+
+  # Optional genome fractions and unmatched/genome ratios in the report.
+  # Use sizes for the same chromosome scope as the comparison. For the
+  # chr14/21/Y development subset, leave this null unless using subset sizes.
+  # Whole-genome example: /ref/context/giab_v3.6_context_sizes.tsv
+  giab_context_sizes: null
+
 # -----------------
 # Container image (used with --use-singularity)
 # Build: docker build -t crossbuild-sv:latest .

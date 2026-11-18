@@ -13,13 +13,30 @@ SCRIPTS = "/app/liftover"
 
 COMPARE = bool(config.get("native_vcf"))
 
+# Context resources are prepared separately by regions/build_context.sh.
+# A configured BED enables labelling; sizes are optional reporting inputs.
+CONTEXT_BED = config.get("regions", {}).get("giab_context")
+CONTEXT_FLAGS = config.get("regions", {}).get(
+    "giab_context_flags", "/app/regions/giab_context_flags.tsv"
+)
+CONTEXT_SIZES = config.get("regions", {}).get("giab_context_sizes")
+CONTEXT = bool(CONTEXT_BED)
+
+if CONTEXT and not COMPARE:
+    raise ValueError("regions.giab_context requires native_vcf for comparison")
+if CONTEXT and not CONTEXT_FLAGS:
+    raise ValueError("regions.giab_context requires regions.giab_context_flags")
+if CONTEXT_SIZES and not CONTEXT:
+    raise ValueError("regions.giab_context_sizes requires regions.giab_context")
+
 rule all:
     input:
         f"{RESULTS}/annotated/source/{SAMPLE}.hg19.annotated.vcf.gz",
         f"{RESULTS}/annotated/merged/{SAMPLE}.merged.hg38.annotated.vcf.gz",
         f"{RESULTS}/annotated/merged/{SAMPLE}.refchanged.hg38.annotated.vcf.gz",
         *([f"{RESULTS}/comparison/{SAMPLE}.links.tsv.gz",
-           f"{RESULTS}/comparison/{SAMPLE}.metrics.tsv"] if COMPARE else [])
+           f"{RESULTS}/comparison/{SAMPLE}.metrics.tsv"] if COMPARE else []),
+        *([f"{RESULTS}/comparison/{SAMPLE}.context.tsv"] if CONTEXT else [])
 
 include: "rules/liftover.smk"
 include: "rules/annotations.smk"

@@ -15,10 +15,22 @@ sample_id so a cohort is just their concatenation:
                  svtype=|size=, region=, precision=). Counts are kept next
                  to rates so a cohort can pool numerators/denominators
                  instead of averaging rates.
+
+Optional genomic context labelling:
+  --context-bed <prepared hg38 BED.gz> --context-flags <priority TSV>
+  adds native_context, lifted_context and context to links.tsv.gz. Lookup
+  uses POS for INS and POS/END for DEL/DUP/INV, including CIPOS/CIEND.
+  context follows the native label when a native call is present, otherwise
+  the lifted placement's label. '.' means unassessed, not 'unique'. Context
+  reporting uses --context-report <TSV>; --context-sizes <TSV> optionally
+  supplies reference genome fractions. Native calls and lifted placements
+  are counted separately. Original comparison metrics retain their meaning.
 """
 import argparse
 import bisect
+import csv
 import gzip
+import math
 import re
 import statistics
 from collections import Counter, defaultdict
@@ -51,11 +63,13 @@ COLUMNS = [
     'chrom_match', 'svtype_match', 'gt_match', 'closest_tool',
     'diff_reason', 'nearest_dist', 'nearest_size_ratio',
     'svtype', 'size_bin', 'in_region', 'precision',
+    'native_context', 'lifted_context', 'context',
 ]
 
 
 # ── VCF reading ──────────────────────────────────────────────────────────────
 def open_text(path):
+    path = str(path)
     return gzip.open(path, 'rt') if path.endswith('.gz') else open(path)
 
 
@@ -68,6 +82,185 @@ def parse_info(info_str):
         elif field and field != '.':
             d[field] = True
     return d
+
+# ── Optional hg38 genomic context labels ────────────────────────────────────
+def load_context_priorities(path):
+    """Read the manifest once; repeated files for the same flag share a rank."""
+    priorities = {}
+
+    with open_text(path) as handle:
+        rows = csv.DictReader(handle, delimiter="\t")
+        if not {'priority', 'flag'}.issubset(rows.fieldnames or []):
+            raise ValueError(f"Context manifest needs priority and flag columns: {path}")
+
+        for row in rows:
+            flag = (row.get("flag") or '').strip()
+            try:
+                priority = int(row["priority"])
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid context priority at {path}:{rows.line_num}") from None
+
+            if not flag or flag in {'unique', NA} or priority < 1:
+                raise ValueError(f"Invalid context flag or priority at {path}:{rows.line_num}")
+
+            if flag in priorities and priorities[flag] != priority:
+                raise ValueError(f"Conflicting priorities for {flag}")
+
+            priorities[flag] = priority
+
+    if not priorities:
+        raise ValueError(f"No context flags in {path}")
+    if len(set(priorities.values())) != len(priorities):
+        raise ValueError("Different context flags must have different priorities")
+    return priorities
+
+
+def load_context_intervals(path, priorities):
+    """Load a nonempty, exclusive context map in zero-based BED coordinates."""
+    regions = defaultdict(list)
+
+    with open_text(path) as handle:
+        for number, line in enumerate(handle, 1):
+            if not line.strip() or line.startswith("#"):
+                continue
+
+            fields = line.rstrip("\r\n").split("\t")
+            if len(fields) != 4:
+                raise ValueError(f"Expected four context BED columns at {path}:{number}")
+            chrom, start, end, label = fields
+            try:
+                start, end = int(start), int(end)
+            except ValueError:
+                raise ValueError(f"Noninteger context coordinates at {path}:{number}") from None
+
+            if not re.fullmatch(r"chr([1-9]|1[0-9]|2[0-2]|X|Y)", chrom):
+                raise ValueError(f"Non-primary hg38 contig in context BED: {chrom}")
+
+            if start < 0 or end <= start:
+                raise ValueError(f"Invalid interval: {line.strip()}")
+
+            if label not in priorities:
+                raise ValueError(f"Unknown context label: {label}")
+
+            regions[chrom].append((start, end, label))
+
+    if not regions:
+        raise ValueError(f"The context map is empty: {path}")
+    for chrom, intervals in regions.items():
+        intervals.sort(key=lambda interval: interval[0])
+
+        for previous, current in zip(intervals, intervals[1:]):
+            if current[0] < previous[1]:
+                raise ValueError(f"Overlapping context intervals on {chrom}")
+
+    return regions
+
+
+def lookup_context(chrom, start, end, regions, priorities):
+    """Highest-priority interval intersecting [start, end); '.' outside scope."""
+    if start < 0 or end <= start:
+        raise ValueError("Invalid breakpoint interval")
+
+    if not re.fullmatch(r"chr([1-9]|1[0-9]|2[0-2]|X|Y)", chrom):
+        return NA
+
+    intervals = regions.get(chrom, [])
+    best = None
+
+    # Find the first interval ending after start. This is binary search over
+    # sorted, non-overlapping intervals, compatible with Python 3.9 as well
+    # as the Python 3.11 pipeline image (bisect's key= requires Python 3.10).
+    low, high = 0, len(intervals)
+    while low < high:
+        middle = (low + high) // 2
+        if intervals[middle][1] <= start:
+            low = middle + 1
+        else:
+            high = middle
+    first = low
+
+    for index in range(first, len(intervals)):
+        region_start, region_end, label = intervals[index]
+
+        if region_start >= end:
+            break
+
+        if best is None or priorities[label] < priorities[best]:
+            best = label
+
+    return best if best is not None else "unique"
+
+
+def breakpoint_interval(position, offsets=(0, 0)):
+    """Convert an inclusive VCF confidence range to a half-open BED interval."""
+    if position < 1:
+        raise ValueError("VCF positions must be at least 1")
+
+    low, high = offsets
+
+    if low > high:
+        raise ValueError("Invalid breakpoint confidence interval")
+
+    start = max(0, position + low - 1)
+    end = position + high
+
+    if end <= start:
+        raise ValueError("Breakpoint uncertainty lies outside valid coordinates")
+
+    return start, end
+
+
+def call_context(record, regions, priorities):
+    """Label an hg38 record's breakpoints, never its full affected span.
+
+    Unsupported types/contigs, absent END for interval types, or malformed
+    confidence coordinates are unassessed. Missing confidence bounds mean
+    the nominal breakpoint; malformed bounds must not silently become exact.
+    """
+    svtype = record["info"].get("SVTYPE")
+
+    if svtype not in INTERVAL_TYPES and svtype != "INS":
+        return NA
+
+    breakpoints = [(record["pos"], "CIPOS")]
+
+    if svtype in INTERVAL_TYPES:
+        try:
+            end = int(record["info"]["END"])
+        except (KeyError, ValueError):
+            return NA
+
+        if end < record["pos"]:
+            return NA
+
+        breakpoints.append((end, "CIEND"))
+
+    labels = []
+
+    for position, confidence_key in breakpoints:
+        bounds = record['info'].get(confidence_key)
+        try:
+            offsets = (0, 0) if bounds in (None, '.', '') else tuple(
+                int(value) for value in str(bounds).split(',')
+            )
+            if len(offsets) != 2:
+                return NA
+            start, end = breakpoint_interval(position, offsets)
+        except (TypeError, ValueError):
+            return NA
+
+        label = lookup_context(
+            record["chrom"], start, end, regions, priorities
+        )
+        labels.append(label)
+
+    if NA in labels:
+        return NA
+
+    hits = [label for label in labels if label != "unique"]
+
+    return min(hits, key=lambda label: priorities[label]) if hits else "unique"
+
 
 
 def records(path):
@@ -271,9 +464,54 @@ def recip_overlap(svtype, a_pos, a_end, b_pos, b_end):
 class Builder:
     def __init__(self, a, tools):
         self.sample, self.tools = a.sample, tools
+
+        self.context_enabled = bool(getattr(a, 'context_bed', None))
+        self.context_priorities = {}
+        self.context_regions = {}
+
+        if self.context_enabled:
+            self.context_priorities = load_context_priorities(
+                a.context_flags
+            )
+
+            self.context_regions = load_context_intervals(
+                a.context_bed,
+                self.context_priorities
+            )
+
         self.src = {r['id']: r for r in records(a.source)}
         self.nat = {r['id']: r for r in records(a.native)}
         self.placements, self.svlens = load_placements(kv_args(a.tool_vcf))
+        # Label each native record and each tool's actual hg38 placement once.
+        self.native_context = {}
+        self.lifted_context = {}
+
+        if self.context_enabled:
+            for native_id, record in self.nat.items():
+                self.native_context[native_id] = call_context(
+                    record,
+                    self.context_regions,
+                    self.context_priorities
+                )
+
+            for tool, path in kv_args(a.tool_vcf).items():
+                for record in records(path):
+                    key = (
+                        tool,
+                        record["id"],
+                        record["chrom"],
+                        record["pos"],
+                        end_of(record)
+                    )
+
+                    label = call_context(
+                        record,
+                        self.context_regions,
+                        self.context_priorities
+                    )
+                    if key in self.lifted_context and self.lifted_context[key] != label:
+                        raise ValueError(f"Conflicting labels for duplicate lifted record: {key}")
+                    self.lifted_context[key] = label
         self.rejected = load_rejections(kv_args(a.rejected), kv_args(a.qc_rejected))
         self.lift_flags = {}
         for path in a.lifted_annotated:
@@ -284,11 +522,12 @@ class Builder:
         self.hg38 = OtherBuild(raw_calls(a.raw_native))
         self.hg19_coverage = Hg19Coverage(chains)
 
-    def placement(self, sid, chrom, pos, tool):
+    def placement(self, sid, chrom, pos, tool, end=None):
         """The placement SVDB saw; prefer this tool's own if several share CHROM/POS."""
-        keys = [(k, ts) for k, ts in self.placements.get(sid, {}).items() if k[:2] == (chrom, pos)]
+        keys = [(k, ts) for k, ts in self.placements.get(sid, {}).items()
+                if k[:2] == (chrom, pos) and (end is None or k[2] == end)]
         keys.sort(key=lambda kt: tool not in kt[1])
-        return keys[0] if keys else ((chrom, pos, pos), [])
+        return keys[0] if keys else ((chrom, pos, pos if end is None else end), [])
 
     def closest_tool(self, sid, nat):
         dist = {}
@@ -301,6 +540,20 @@ class Builder:
         best = min(dist.values())
         return ','.join(t for t in self.tools if dist.get(t) == best)
 
+    def placement_context(self, tool, sid, chrom, pos, end):
+        """For union, require agreement among tools at this exact placement."""
+        if tool != "union":
+            key = (tool, sid, chrom, pos, end)
+            return self.lifted_context.get(key, NA)
+
+        labels = {
+            self.lifted_context[(t, sid, chrom, pos, end)]
+            for t in self.tools
+            if (t, sid, chrom, pos, end) in self.lifted_context
+        }
+
+        return next(iter(labels)) if len(labels) == 1 else NA
+
     def row(self, tool, set_, cls, nid, lifted):
         row = dict.fromkeys(COLUMNS, NA)
         row.update(sample_id=self.sample, tool=tool, set=set_, match_class=cls)
@@ -308,6 +561,7 @@ class Builder:
         regions = []
 
         if nat:
+            row["native_context"] = self.native_context.get(nid, NA)
             nlen = svlen_of(nat)
             row.update(native_id=nid, nat_chrom=nat['chrom'], nat_pos=nat['pos'], nat_end=end_of(nat),
                        nat_svtype=nat['info'].get('SVTYPE', NA), nat_svlen=nlen, nat_gt=nat['gt'],
@@ -318,7 +572,8 @@ class Builder:
             regions += nf.values()
 
         if lifted:
-            sid, chrom, pos = lifted
+            sid, chrom, pos = lifted[:3]
+            placement_end = lifted[3] if len(lifted) > 3 else None
             src = self.src.get(sid)
             if src:
                 sf = flags(src, SRC_FLAGS)
@@ -326,7 +581,10 @@ class Builder:
                            src_svtype=src['info'].get('SVTYPE', NA), src_svlen=svlen_of(src), src_gt=src['gt'],
                            **{f'src_{k}': v for k, v in sf.items()})
                 regions += sf.values()
-            (chrom, pos, end), here = self.placement(sid, chrom, pos, tool)
+            (chrom, pos, end), here = self.placement(sid, chrom, pos, tool, placement_end)
+            row["lifted_context"] = self.placement_context(
+                tool, sid, chrom, pos, end
+            )
             lf = self.lift_flags.get((sid, chrom, pos, end), dict.fromkeys(HG38_FLAGS, 0))
             regions += lf.values()
             lifted_tools = {t for ts in self.placements.get(sid, {}).values() for t in ts}
@@ -374,6 +632,10 @@ class Builder:
             why = self.hg38.explain(row['lift_chrom'], row['lift_pos'], row['src_svtype'], svlen)
         if cls != 'matched':
             row.update(zip(('diff_reason', 'nearest_dist', 'nearest_size_ratio'), why))
+
+        row["context"] = (
+            row["native_context"] if nat else row["lifted_context"]
+        )
         return row
 
     def links(self, tool, set_, path):
@@ -409,7 +671,24 @@ class Builder:
                 key = (cls, r['native_id'], r['source_id'], r['lift_chrom'], r['lift_pos'], r['lift_end'])
                 if key not in seen:
                     seen.add(key)
-                    out.append(dict(r, tool='union'))
+                    union_row = dict(r, tool="union")
+
+                    if union_row["source_id"] != NA:
+                        union_row["lifted_context"] = self.placement_context(
+                            "union",
+                            union_row["source_id"],
+                            union_row["lift_chrom"],
+                            union_row["lift_pos"],
+                            union_row["lift_end"]
+                        )
+
+                    union_row["context"] = (
+                        union_row["native_context"]
+                        if union_row["native_id"] != NA
+                        else union_row["lifted_context"]
+                    )
+
+                    out.append(union_row)
         return self.one_to_one(out)
 
     def one_to_one(self, rows):
@@ -437,7 +716,10 @@ class Builder:
             key = (r['source_id'], r['lift_chrom'], r['lift_pos'])
             if id(r) in demoted and r['source_id'] not in still_matched and key not in seen:
                 seen.add(key)
-                kept.append(self.row(r['tool'], r['set'], 'lifted_only', None, key))
+                # Preserve the selected END when rebuilding a demoted union
+                # row; several tools may share POS but disagree on END.
+                kept.append(self.row(r['tool'], r['set'], 'lifted_only', None,
+                                     (*key, r['lift_end'])))
         return kept
 
     @staticmethod
@@ -457,6 +739,204 @@ class Builder:
             if r['match_class'] == 'matched':
                 r['n_links'] = len(per_native[r['native_id']])
         return rows
+
+# idenify if a call is native/lifted
+def context_call_key(row, side):
+    if side == "native":
+        if row["native_id"] == NA:
+            return None
+
+        return (row["native_id"],)
+
+    if side == "lifted":
+        if row["source_id"] == NA:
+            return None
+
+        return (
+            row["source_id"],
+            row["lift_chrom"],
+            row["lift_pos"],
+            row["lift_end"]
+        )
+
+    raise ValueError(f"Unknown comparison side: {side}")
+
+def context_counts(rows):
+    """Count distinct calls/placements within one sample."""
+    calls = {}
+
+    for row in rows:
+        for side in ("native", "lifted"):
+            identity = context_call_key(row, side)
+
+            if identity is None:
+                continue
+
+            key = (row["tool"], row["set"], side, identity)
+            label = row[f"{side}_context"]
+            status = (
+                "matched" if row["match_class"] == "matched"
+                else "unmatched"
+            )
+
+            previous = calls.get(key)
+
+            if previous is not None:
+                previous_label, previous_status = previous
+
+                if label != previous_label:
+                    raise ValueError(f"Conflicting context labels for {key}")
+
+                if previous_status == "matched":
+                    status = "matched"
+
+            calls[key] = (label, status)
+
+    counts = Counter()
+
+    for (tool, set_, side, identity), (label, status) in calls.items():
+        counts[(tool, set_, side, label, status)] += 1
+
+    return counts
+
+# Read reference-area fractions from the sizes table, not from variant counts.
+def load_context_sizes(path, priorities):
+    sizes = {}
+    supplied_fractions = {}
+    expected = set(priorities) | {"unique"}
+
+    with open_text(path) as handle:
+        rows = csv.DictReader(handle, delimiter="\t")
+        if not {"context", "bp", "fraction"}.issubset(rows.fieldnames or []):
+            raise ValueError("Context sizes needs context, bp and fraction columns")
+
+        for row in rows:
+            label = row["context"]
+            if label not in expected or label in sizes:
+                raise ValueError(f"Unknown or duplicate context in sizes table: {label}")
+            try:
+                bp = int(row["bp"])
+                fraction = float(row["fraction"])
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid context size at {path}:{rows.line_num}") from None
+            if bp < 0 or not math.isfinite(fraction) or not 0 <= fraction <= 1:
+                raise ValueError(f"Invalid context size/fraction for {label}")
+            sizes[label] = bp
+            supplied_fractions[label] = fraction
+
+    if set(sizes) != expected:
+        raise ValueError("Sizes table must contain every context flag and unique")
+    genome_bp = sum(sizes.values())
+    if genome_bp <= 0:
+        raise ValueError("The reference genome length must be positive")
+    fractions = {label: bp / genome_bp for label, bp in sizes.items()}
+    if any(abs(fractions[label] - supplied_fractions[label]) > 1e-8 for label in sizes):
+        raise ValueError("Context fractions disagree with their base-pair totals")
+    return fractions
+
+
+# Calculate context shares using separate native and lifted matched baselines.
+# Unassessed calls remain in the totals and appear in a separate '.' row.
+def context_summary(counts, priorities, genome_fractions=None):
+    summaries = []
+
+    groups = sorted({key[:3] for key in counts})
+    labels = sorted(priorities, key=priorities.get) + ["unique", NA]
+
+    for tool, set_, side in groups:
+        matched_total = sum(
+            counts[(tool, set_, side, label, "matched")]
+            for label in labels
+        )
+        unmatched_total = sum(
+            counts[(tool, set_, side, label, "unmatched")]
+            for label in labels
+        )
+
+        # The original comparison does not define native-only in refchanged.
+        unmatched_defined = not (set_ == "refchanged" and side == "native")
+
+        for label in labels:
+            matched = counts[(tool, set_, side, label, "matched")]
+            unmatched = counts[(tool, set_, side, label, "unmatched")]
+
+            matched_share = matched / matched_total if matched_total else NA
+            unmatched_share = (
+                unmatched / unmatched_total
+                if unmatched_defined and unmatched_total else NA
+            )
+
+            enrichment = NA
+
+            if (
+                label != NA
+                and matched_share != NA
+                and unmatched_share != NA
+                and matched_share > 0
+            ):
+                enrichment = unmatched_share / matched_share
+
+            genome_fraction = (genome_fractions or {}).get(label, NA)
+            genome_enrichment = NA
+            if (
+                label != NA
+                and unmatched_share != NA
+                and genome_fraction != NA
+                and genome_fraction > 0
+            ):
+                genome_enrichment = unmatched_share / genome_fraction
+
+            summaries.append({
+                "tool": tool,
+                "set": set_,
+                "side": side,
+                "count_unit": "native_call" if side == "native" else "lifted_placement",
+                "context": label,
+                "matched_count": matched,
+                "unmatched_count": unmatched if unmatched_defined else NA,
+                "matched_total": matched_total,
+                "unmatched_total": unmatched_total if unmatched_defined else NA,
+                "matched_share": matched_share,
+                "unmatched_share": unmatched_share,
+                "unmatched_vs_matched": enrichment,
+                "genome_fraction": genome_fraction,
+                "unmatched_vs_genome": genome_enrichment,
+            })
+
+    return summaries
+
+
+# Append integer context counts to metrics.tsv; cohort aggregation can sum
+# them without accidentally adding fractions or enrichment ratios together.
+def context_metric_rows(summaries):
+    result = []
+    for summary in summaries:
+        side = summary["side"]
+        unit = "calls" if side == "native" else "placements"
+        for status in ("matched", "unmatched"):
+            count = summary[f"{status}_count"]
+            if count != NA:
+                result.append((
+                    summary["tool"], summary["set"],
+                    f"context={summary['context']}",
+                    f"{side}_context_{status}_{unit}", count
+                ))
+    return result
+
+
+# Write the separate context report, including sample identity and count units.
+def write_context_report(path, sample, summaries):
+    fields = [
+        "sample_id", "tool", "set", "side", "count_unit", "context",
+        "matched_count", "unmatched_count", "matched_total", "unmatched_total",
+        "matched_share", "unmatched_share", "unmatched_vs_matched",
+        "genome_fraction", "unmatched_vs_genome",
+    ]
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        for summary in summaries:
+            writer.writerow({"sample_id": sample, **summary})
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
@@ -593,9 +1073,37 @@ def main():
     p.add_argument('--chain', required=True, help='hg19->hg38 UCSC chain (diff_reason)')
     p.add_argument('--links', required=True)
     p.add_argument('--metrics', required=True)
+    p.add_argument(
+        "--context-bed",
+        help="Prepared hg38 genomic context BED, plain or gzip-compressed"
+    )
+
+    p.add_argument(
+        "--context-flags",
+        help="TSV containing genomic context priorities"
+    )
+    p.add_argument(
+        "--context-report",
+        help="Output TSV with context counts, shares and enrichment"
+    )
+    p.add_argument(
+        "--context-sizes",
+        help="Optional context sizes TSV; its chromosome scope must match the analysis"
+    )
     a = p.parse_args()
+    if bool(a.context_bed) != bool(a.context_flags):
+        p.error("--context-bed and --context-flags must be supplied together")
+    if (a.context_report or a.context_sizes) and not a.context_bed:
+        p.error("--context-report and --context-sizes require both context inputs")
+    if a.context_report and a.context_report in (a.links, a.metrics):
+        p.error("The context report must have its own output path")
 
     b = Builder(a, a.tools.split(','))
+    # Load optional reference fractions before creating output files.
+    genome_fractions = (
+        load_context_sizes(a.context_sizes, b.context_priorities)
+        if a.context_sizes else None
+    )
     refchanged = defaultdict(set)
     with open(a.refchanged_ids) as fh:
         for line in fh:
@@ -608,6 +1116,12 @@ def main():
         rows += b.links(tool, set_, path)
     rows += b.union(rows)
 
+    # Prepare reporting before writing outputs, catching conflicting labels.
+    summaries = (
+        context_summary(context_counts(rows), b.context_priorities, genome_fractions)
+        if b.context_enabled else []
+    )
+
     with gzip.open(a.links, 'wt') as fh:
         fh.write('\t'.join(COLUMNS) + '\n')
         for r in rows:
@@ -615,8 +1129,12 @@ def main():
 
     with open(a.metrics, 'w') as fh:
         fh.write('sample_id\ttool\tset\tstratum\tmetric\tvalue\n')
-        for rec in yield_metrics(b, refchanged) + comparison_metrics(rows):
+        for rec in yield_metrics(b, refchanged) + comparison_metrics(rows) + context_metric_rows(summaries):
             fh.write('\t'.join(map(str, (a.sample, *rec))) + '\n')
+
+    # Shares are fractions, e.g. 0.20 = 20%; undefined ratios are '.'.
+    if a.context_report:
+        write_context_report(a.context_report, a.sample, summaries)
 
 
 if __name__ == '__main__':
