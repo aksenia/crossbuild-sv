@@ -162,6 +162,7 @@ about 2–3 minutes on 8 cores.
 | `liftover/<tool>/<s>.qc_rejected.vcf` | Lifted but failed post-liftover QC (`QC_REJECT_REASON`) |
 | `liftover/<tool>/<s>.normalize.log` | `bcftools norm` / finalize log |
 | `liftover/<tool>/<s>.log` | Tool run log (stdout and stderr) |
+| `provenance.tsv` | sha256 of inputs, references, region BEDs and config; tool versions |
 | `liftover/merged/<s>.refchanged_ids.tsv` | `ID<TAB>tool` for every REF-changed flag |
 | `annotated/source/<s>.hg19.annotated.vcf.gz` | Source VCF with region flags |
 | `annotated/merged/<s>.merged.hg38.annotated.vcf.gz` | Merged main set with region flags |

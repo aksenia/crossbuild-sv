@@ -15,6 +15,7 @@ COMPARE = bool(config.get("native_vcf"))
 
 rule all:
     input:
+        f"{RESULTS}/provenance.tsv",
         f"{RESULTS}/annotated/source/{SAMPLE}.hg19.annotated.vcf.gz",
         f"{RESULTS}/annotated/merged/{SAMPLE}.merged.hg38.annotated.vcf.gz",
         f"{RESULTS}/annotated/merged/{SAMPLE}.refchanged.hg38.annotated.vcf.gz",
@@ -23,5 +24,6 @@ rule all:
 
 include: "rules/liftover.smk"
 include: "rules/annotations.smk"
+include: "rules/provenance.smk"
 if COMPARE:
     include: "rules/comparison.smk"
