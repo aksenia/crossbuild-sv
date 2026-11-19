@@ -6,7 +6,7 @@ HG002 GRCh37 calls are lifted to hg38 and compared with a DRAGEN run of the
 same reads on hg38 ([comparison.md](comparison.md)). The cohort has the same
 setup and no truth set, so no GIAB benchmark is used.
 
-WG result (on hetzner, in `crossbuild-sv-dev/runs/wg4`;
+WG result (on hetzner, in `crossbuild-sv-dev/runs/wg5`;
 [pilot_results.md](pilot_results.md)): matched calls are 98.8% at the exact
 native position. 1,696 of 17,480 native calls are unmatched:
 
@@ -272,7 +272,7 @@ lifted-only, and swapped records keep the old SVTYPE.
 4. Optional: set SVTYPE of swapped records to match their hg38 alleles.
 5. Report the change in `refchanged` metrics.
 
-Data (in `crossbuild-sv-dev/runs/wg4`): `liftover/<tool>/HG002.hg38.raw.vcf.gz`,
+Data (in `crossbuild-sv-dev/runs/wg5`): `liftover/<tool>/HG002.hg38.raw.vcf.gz`,
 `liftover/merged/HG002.refchanged_ids.tsv`, links rows with `set=refchanged`.
 
 ## Step 3. Same-site insertions with different length

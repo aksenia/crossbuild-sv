@@ -14,7 +14,7 @@ native comparison. Metric definitions: [comparison.md](comparison.md).
 | Chains | UCSC hg19ToHg38 (CrossMap, bcftools, Picard); transanno minimap2 chain |
 | Tools | CrossMap 0.7.3, bcftools 1.22 +liftover, Picard 3.4.0, transanno 0.4.5 |
 | Linking | SVDB 2.12.0 (`--overlap 0.8`, profile `sample`), made 1:1 in compare_native.py |
-| Pipeline | main at `f386e54`; run on hetzner, in `crossbuild-sv-dev/runs/wg4`, about 2 min |
+| Pipeline | main at `3200a00`; run on hetzner, in `crossbuild-sv-dev/runs/wg5`, about 2 min |
 
 After filtering: 16,930 source calls, 17,480 native calls.
 
@@ -187,6 +187,30 @@ Observations (union) from the links table:
   heterozygous (58% vs 49%) and in flagged regions (21% vs 5%).
 - `other_type_other_build`: mostly BND in the other build; 78% heterozygous.
 - `filtered_other_build`: median QUAL 322.
+
+## Lift strand (main set)
+
+`LIFT_STRAND` is the strand of the chain each tool lifted through. About
+0.3% of calls lift onto an inverted chain segment (`-`):
+
+| Tool | `-` lifted | `-` matched | Precision `-` | Precision `+` |
+| --- | --- | --- | --- | --- |
+| CrossMap | 52 | 13 | 0.250 | 0.943 |
+| bcftools | 46 | 16 | 0.348 | 0.947 |
+| Picard | 48 | 15 | 0.313 | 0.946 |
+| transanno | 45 | 14 | 0.311 | 0.947 |
+| Union | 54 | 17 | 0.315 | 0.945 |
+
+- Of the 37 union lifted-only `-` calls, 29 have no native call within 1 kb
+  (`none`), 6 a filtered one, 2 a same-type call nearby. The low precision
+  comes from native having no call there, not from shifted placements.
+- Matched `-` calls are at the exact position (union 16 of 17). CrossMap:
+  8 of 13, the other 4 INS from its REF truncation and 1 DEL.
+- `LIFT_STRAND` agrees with the tools' own tags on every record
+  (Picard `ReverseComplementedAlleles` 48, transanno `ORIGINAL_STRAND` 52,
+  bcftools `FLIP` 53), except one bcftools `FLIP` record tagged `+`: an INS
+  whose hg19 anchor base sits in a chain gap, rewritten to a multiallelic
+  record (refchanged set). No record is left without a strand.
 
 ## Open points
 
